@@ -26,9 +26,10 @@
 #
 # 用法:
 #   1. 在 GitHub 新建仓库，把本文件放到 .github/workflows/ 下并 push
-#      (patches/ 下 5 个 patch 必须一起推: 50_add_susfs_in_kernel-5.4.patch,
+#      (patches/ 下 6 个 patch 必须一起推: 50_add_susfs_in_kernel-5.4.patch,
 #       55_add_selinux_hide_access_filter.patch,
 #       57_add_selinux_hide_context_guards.patch,
+#       58_add_selinux_hide_setprocattr_guard.patch,
 #       60_add_rekernel.patch, 65_add_lineage_hide_procfs.patch)
 #   2. Actions 页面 → Build SukiSU LTO24 Kernel for oscarc → Run workflow
 #      ★ los_date 不再是必填的"当前 nightly": 现在会先用官方 API
@@ -304,6 +305,31 @@ jobs:
           echo "--- 验证 context 守卫已集成 ---"
           test "$(grep -c 'strnstr(.*adbroot' kernel/feature/selinux_hide.c)" -eq 2
           grep -n 'strnstr(.*"adbroot"' kernel/feature/selinux_hide.c
+
+      # ============ 4.44 关闭 setprocattr 换行短路 (patch 58_) ============
+      # ksu_handle_selinux_setprocattr() 沿用了 stock 的转换条件:
+      #     if (size && str[0] && str[0] != '\n')
+      # 首字节为换行的载荷会跳过备份策略解析, 直接落到 stock
+      # selinux_setprocattr(), 那里对 name=="current" 先做 PROCESS__SETCURRENT 的
+      # avc_has_perm(), 再因 sid==0 返回 -EINVAL。而普通非法载荷在本函数内就已
+      # 返回 EINVAL。两条等价失败路径留下可观测差异:
+      #   - AVC lookup 次数: 非法载荷 1 次 / 换行载荷 2 次
+      #   - 耗时: 换行载荷多几百 ns (实测 A-B = 313~365 ns, A slower ≈ 85%)
+      # duck-detector 的 App Zygote attr/current timing 正是用这对载荷探测
+      # "存在预转换解析"。去掉换行短路后两类载荷都走备份策略解析并同样返回
+      # -EINVAL, 对调用者完全等价 (stock 对换行载荷最终也是 -EINVAL)。
+      # 安全边界: 本函数开头已过滤 name != "current"; current 分支在 sid==0 时
+      # 本就返回 -EINVAL, 不存在依赖空载荷成功的合法用法。
+      # ★ 顺序依赖: 锚点在 57_ 写入的 "换行剥离" 块之后, 必须在 4.42 之后。
+      - name: 关闭 setprocattr 换行短路 patch
+        run: |
+          cd kernel/KernelSU
+          patch -p1 < ../../patches/58_add_selinux_hide_setprocattr_guard.patch
+          echo "--- 验证换行短路已移除 ---"
+          old_cond=$(grep -cF 'if (size && str[0] && str[0] != ' kernel/feature/selinux_hide.c || true)
+          echo "旧条件出现次数: $old_cond (期望 0)"
+          test "$old_cond" -eq 0
+          grep -nF 'if (size && str[0]) {' kernel/feature/selinux_hide.c
 
       # ============ 4.5 应用 SUSFS 5.4 patch (fs/ 层, 隐藏 SELinux 核心) ============
       # 官方 SUSFS v2.2.0 只有 GKI 5.10 patch。oscarc 是高通 5.4 QGKI ——

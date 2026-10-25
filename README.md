@@ -46,10 +46,11 @@ Linux version 5.4.302-qgki-g4dac00dfc379 (root@3c794f190b77)
 | workaround patch | 60_/70_/80_ 三个 | **零个** (60_ 编号已复用给 Re:Kernel) |
 | 编译时间 | 40-90 分钟 | 60-120 分钟 (LTO 链接慢) |
 
-## 编译流程 (GitHub Actions, 31 步)
+## 编译流程 (GitHub Actions, 32 步)
 ```
 检出仓库 → 内核源码(缓存) → 依赖 → clang22(缓存) → 集成 ReSukiSU
-→ 55_ selinux_hide access / 57_ selinux_hide context / SUSFS 5.4 patch
+→ 55_ selinux_hide access / 57_ selinux_hide context / 58_ setprocattr 换行短路
+→ SUSFS 5.4 patch
 → 65_ Lineage Hide procfs / 60_ Re:Kernel patch
 → trace include / tcpc / oplus_project 源码兼容
 → 配置 (LLVM=1 + holi-qgki_defconfig + KSU/SUSFS/REKERNEL 开关)
@@ -445,6 +446,59 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
   `error: cannot find the insertion point inside my_write_access(); the file was edited or reformatted - patch it manually`。
 - workflow 步骤 4.42 会校验 `grep -c 'strnstr(.*adbroot'` 恰为 **2**，缺一即失败。
 
+## 12. setprocattr 换行短路 (patch 58_)
+
+`ksu_handle_selinux_setprocattr()` 沿用了 AOSP 的转换条件：
+
+```c
+if (size && str[0] && str[0] != '\n') {
+    /* ... 走备份策略解析 ... */
+}
+```
+
+这里有一个可观测的行为差异。`selinux_hide` 开启后，普通非法载荷（如
+`u:r:__selinux_hide_probe_invalid__:s0`）会进入本函数、在备份策略里解析失败，
+**只产生 1 次 AVC lookup**；而等长但首字节为换行的载荷（`\n:r:__...:s0`）
+被 `str[0] != '\n'` 短路，直接落到 stock `selinux_setprocattr()`，那里对
+`name == "current"` 先做 `PROCESS__SETCURRENT` 的 `avc_has_perm()`，再因
+`sid == 0` 返回 `-EINVAL` —— **共 2 次 AVC lookup，且多花 313~365 ns**。
+
+两条路径对调用者都返回 `-EINVAL`，却留下可被观测的时序/计数差。
+duck-detector 的 `App Zygote attr/current timing` 就是拿这对载荷做 A/B 对比，
+其源码 `capability/selinuxpolicy/data/src/main/cpp/selinuxpolicy/avc_lookup_probe.h`
+里的注释把这件事写得很白：
+
+```c
+// selinux_setprocattr checks SETCURRENT, then converts a value that does not start with a
+// newline. A names a type no policy defines and fails conversion with EINVAL; B skips conversion
+// and fails with EINVAL on the empty SID. Equal lengths keep the copied bytes identical.
+constexpr char kPayloadA[] = "u:r:__selinux_hide_probe_invalid__:s0";
+constexpr char kPayloadB[] = "\n:r:__selinux_hide_probe_invalid__:s0";
+```
+
+`58_` 把条件改为 `if (size && str[0])`，让换行载荷也走本函数的备份策略解析：
+`string_to_context_struct()` 里 `p = scontextp; while (*p && *p != ':') p++;`
+遇到首字符换行直接 `goto out` → `-EINVAL`。于是两类载荷 AVC 计数都是 1、
+耗时一致，差异消失。
+
+**为何语义安全**：
+- stock `selinux_setprocattr()` 对 `\n` 开头载荷的结局本就是 `-EINVAL`
+  （AOSP 注释 `/* Obtain a SID for the context, if one was specified. */`
+  说明换行开头 = “未指定上下文” → `sid` 保持 0 → `current` 分支 `goto abort_change`）。
+- 本函数开头已有 `if (strcmp(name, "current")) goto call_orig;`，
+  故 `exec` / `fscreate` / `keycreate` / `sockcreate` 四类 attr 的
+  “空载荷 = 清除标签”语义完全不受影响（含 stock 的 fscreate 审计逻辑）。
+- `current` 分支在 `sid == 0` 时本就返回 `-EINVAL`，不存在依赖空载荷成功的合法用法。
+
+**集成要点**：
+- 错位不成立：只改一个条件表达式，不新增/删除 struct → 与 CFI、`module_layout` CRC 无关。
+- **顺序依赖**：尾点在 `57_` 写入的“换行剥离”块之后，必须排在 4.42 之后
+  （workflow 里排在 **4.44**）。
+- workflow 步骤 4.44 校验旧条件 `grep -c "if (size && str\[0\] && str\[0\] != "` 为
+  **0**，且新条件 `if (size && str\[0\]) {` 存在，缺一即失败。
+- 也可不改内核先验证：`ksud feature set selinux_hide 0` 可运行时关掉整个特性
+  （代价是 `/sys/fs/selinux/{access,context,status}` 三处伪装同时失效）。
+
 ## 备选: 关闭 CFI 的降级方案
 
 若 CFI enforcing 下 KSU 引发 panic (无法开机)：
@@ -456,11 +510,12 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
 
 ```
 sukisu-oscarc-lto24/
-├── .github/workflows/build-sukisu-lto24.yml   # 31 步 workflow
+├── .github/workflows/build-sukisu-lto24.yml   # 32 步 workflow
 ├── patches/
 │   ├── 50_add_susfs_in_kernel-5.4.patch       # SUSFS 5.4 移植 (含 sucompat ABI rc3 适配)
 │   ├── 55_add_selinux_hide_access_filter.patch # ReSukiSU selinux_hide access 探测过滤
 │   ├── 57_add_selinux_hide_context_guards.patch # selinux_hide context/setprocattr 的 adbroot 守卫 (必须紧跟 55_)
+│   ├── 58_add_selinux_hide_setprocattr_guard.patch # 关闭 setprocattr 换行短路 (必须排在 57_ 之后)
 │   ├── 60_add_rekernel.patch                  # Re:Kernel (binder/signal; drivers/ 挂载见 workflow 4.55)
 │   ├── 65_add_lineage_hide_procfs.patch       # Lineage Hide procfs 路径清洗 (必须排在 50_ 之后)
 │   └── 70_add_cfi_slowpath.patch              # 仅 enable_cfi=false 时应用 (CFI 关闭兜底)
