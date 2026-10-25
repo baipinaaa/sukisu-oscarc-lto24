@@ -46,10 +46,10 @@ Linux version 5.4.302-qgki-g4dac00dfc379 (root@3c794f190b77)
 | workaround patch | 60_/70_/80_ 三个 | **零个** (60_ 编号已复用给 Re:Kernel) |
 | 编译时间 | 40-90 分钟 | 60-120 分钟 (LTO 链接慢) |
 
-## 编译流程 (GitHub Actions, 29 步)
+## 编译流程 (GitHub Actions, 30 步)
 ```
 检出仓库 → 内核源码(缓存) → 依赖 → clang22(缓存) → 集成 ReSukiSU
-→ 55_ selinux_hide / SUSFS 5.4 patch / 60_ Re:Kernel patch
+→ 55_ selinux_hide / SUSFS 5.4 patch / 65_ Lineage Hide procfs / 60_ Re:Kernel patch
 → trace include / tcpc / oplus_project 源码兼容
 → 配置 (LLVM=1 + holi-qgki_defconfig + KSU/SUSFS/REKERNEL 开关)
 → 编译 (LLVM=1 + ccache) → 解析官方 API 最新可用 nightly
@@ -376,6 +376,40 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
   `rekernel_report(SIGNAL`、`source "drivers/rekernel/Kconfig"`、
   `obj-$(CONFIG_REKERNEL)` 四个标记，缺一即构建失败。
 
+## 10. Lineage Hide procfs 路径清洗 (patch 65_)
+
+上游 [null07089/Lineage_Hide](https://github.com/null07089/Lineage_Hide) 的
+`scripts/patch-kernel.sh`（bash + 内嵌 python 的语义补丁，非本仓库格式），
+已改写为可直接 `patch -p1` 的 `patches/65_add_lineage_hide_procfs.patch`。
+
+**解决什么问题**：SUSFS 的 `sus_path` 只在 namei/getdents 这类「按路径访问」
+的 syscall 上拦截；而 `/proc/<pid>/maps`、`/proc/<pid>/fd/*` 的内容是内核用
+`d_path()` 自己拼出来的字符串，不经过那些入口 —— 宿主机路径里的 ROM 名
+（`lineage` 等）会直接暴露给检测 App。50_ patch 对 `do_proc_readlink()` 只有
+一个钩子，且那是 `CONFIG_KSU_SUSFS_OPEN_REDIRECT` 的「重定向后显示原路径」，
+不做关键词清洗；`seq_file_path()` 则完全没被 50_ 碰过。
+
+| 文件 | 改动 |
+|---|---|
+| `include/linux/lineage_hide.h`（新增） | `lineage_hide_active()` = `current_uid().val >= 10000`；`lineage_hide_scrub_rom_names()` 对 `lineage/crdroid/aospa/pixelexperience/omnirom/protonaosp` 做 `strncasecmp` 匹配，命中就把**最后一个字符换成 `x`**（等长，不改变字符串长度/偏移） |
+| `fs/proc/base.c` | `do_proc_readlink()` 里 `d_path()` 成功之后插 `lineage_hide_scrub_rom_names(pathname)` → 影响 `/proc/<pid>/fd/*`、`map_files/*` |
+| `fs/seq_file.c` | 整个替换 `seq_file_path()` 实现（`seq_get_buf` / `d_path` / `mangle_path` / `seq_commit`）→ 影响 `/proc/<pid>/maps`、`smaps`、`numa_maps` |
+
+**集成要点**：
+- **顺序依赖**：`fs/proc/base.c` 首个 hunk 的上下文含有 50_ 写入的
+  `#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)`，
+  所以 workflow 里本 patch 必须在 **4.5 (50_) 之后**（现排在 4.52）。
+  已在本机实测：官方原版两个文件 → 先打 50_ 的 base.c 段 → 再打 65_，干净应用。
+- **只用已有符号**：`seq_get_buf` / `seq_commit`（`include/linux/seq_file.h`
+  static inline）、`mangle_path`（`fs/seq_file.c` 内定义并 EXPORT）、
+  `d_path`（经 `include/linux/fs.h:8 -> linux/dcache.h`）。
+- **只改显示字符串**：文件访问、inode、mount 一律不变；不新增 struct → 不影响
+  `module_layout` CRC（既不触发 60_ 那类跳 CRC 需求，也不与 CFI 冲突）。
+- 与 60_ Re:Kernel **无文件重叠**，两者先后顺序无约束。
+- workflow 步骤 4.52 会校验 `LINEAGE_HIDE_APP_UID_MIN`、两个调用点，以及
+  `seq_get_buf` / `seq_commit` / `mangle_path` / `dcache.h` 四项 API 可见性，缺一即失败。
+- 可选性：不打这个 patch，内核与模块其余功能不受影响，只少这层进程内 procfs 路径伪装。
+
 ## 备选: 关闭 CFI 的降级方案
 
 若 CFI enforcing 下 KSU 引发 panic (无法开机)：
@@ -387,11 +421,12 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
 
 ```
 sukisu-oscarc-lto24/
-├── .github/workflows/build-sukisu-lto24.yml   # 29 步 workflow
+├── .github/workflows/build-sukisu-lto24.yml   # 30 步 workflow
 ├── patches/
 │   ├── 50_add_susfs_in_kernel-5.4.patch       # SUSFS 5.4 移植 (含 sucompat ABI rc3 适配)
 │   ├── 55_add_selinux_hide_access_filter.patch # ReSukiSU selinux_hide access 探测过滤
 │   ├── 60_add_rekernel.patch                  # Re:Kernel (binder/signal; drivers/ 挂载见 workflow 4.55)
+│   ├── 65_add_lineage_hide_procfs.patch       # Lineage Hide procfs 路径清洗 (必须排在 50_ 之后)
 │   └── 70_add_cfi_slowpath.patch              # 仅 enable_cfi=false 时应用 (CFI 关闭兜底)
 ├── _tools/check_hunk_headers.py               # patch hunk 头校验小工具
 └── README.md

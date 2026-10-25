@@ -1,0 +1,107 @@
+diff -ruN orig/fs/proc/base.c mod/fs/proc/base.c
+--- orig/fs/proc/base.c	2026-10-25 11:05:57.701987800 +0800
++++ mod/fs/proc/base.c	2026-10-25 11:20:39.833696800 +0800
+@@ -102,6 +102,7 @@
+ #endif // #if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+ #include <trace/events/oom.h>
+ #include "internal.h"
++#include <linux/lineage_hide.h>
+ #include "fd.h"
+ 
+ #include "../../lib/kstrtox.h"
+@@ -1819,6 +1820,7 @@
+ 	len = PTR_ERR(pathname);
+ 	if (IS_ERR(pathname))
+ 		goto out;
++	lineage_hide_scrub_rom_names(pathname);
+ 	len = tmp + PAGE_SIZE - 1 - pathname;
+ 
+ 	if (len > buflen)
+diff -ruN orig/fs/seq_file.c mod/fs/seq_file.c
+--- orig/fs/seq_file.c	2026-10-25 11:04:44.018099600 +0800
++++ mod/fs/seq_file.c	2026-10-25 11:20:39.834695100 +0800
+@@ -10,6 +10,7 @@
+ #include <linux/fs.h>
+ #include <linux/export.h>
+ #include <linux/seq_file.h>
++#include <linux/lineage_hide.h>
+ #include <linux/vmalloc.h>
+ #include <linux/slab.h>
+ #include <linux/cred.h>
+@@ -494,6 +495,28 @@
+  */
+ int seq_file_path(struct seq_file *m, struct file *file, const char *esc)
+ {
++	if (lineage_hide_active()) {
++		char *buf;
++		size_t size = seq_get_buf(m, &buf);
++		int res = -1;
++
++		if (size) {
++			char *p = d_path(&file->f_path, buf, size);
++
++			if (!IS_ERR(p)) {
++				char *end;
++
++				lineage_hide_scrub_rom_names(p);
++				end = mangle_path(buf, p, esc);
++				if (end)
++					res = end - buf;
++			}
++		}
++		seq_commit(m, res);
++
++		return res;
++	}
++
+ 	return seq_path(m, &file->f_path, esc);
+ }
+ EXPORT_SYMBOL(seq_file_path);
+diff -ruN orig/include/linux/lineage_hide.h mod/include/linux/lineage_hide.h
+--- orig/include/linux/lineage_hide.h	1970-01-01 08:00:00.000000000 +0800
++++ mod/include/linux/lineage_hide.h	2026-10-25 11:20:39.837191700 +0800
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Scrub custom ROM identifiers out of path strings that procfs shows to
++ * application processes.  Only the display string is rewritten in place;
++ * file access is not affected.
++ */
++#ifndef _LINUX_LINEAGE_HIDE_H
++#define _LINUX_LINEAGE_HIDE_H
++
++#include <linux/cred.h>
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/string.h>
++#include <linux/types.h>
++
++#define LINEAGE_HIDE_APP_UID_MIN 10000
++
++static inline bool lineage_hide_active(void)
++{
++	return current_uid().val >= LINEAGE_HIDE_APP_UID_MIN;
++}
++
++static inline void lineage_hide_scrub_rom_names(char *path)
++{
++	static const char *const rom_names[] = {
++		"lineage", "crdroid", "aospa", "pixelexperience",
++		"omnirom", "protonaosp",
++	};
++	size_t i, len;
++	char *p;
++
++	if (!path || !lineage_hide_active())
++		return;
++
++	for (i = 0; i < ARRAY_SIZE(rom_names); i++) {
++		len = strlen(rom_names[i]);
++		for (p = path; *p; p++) {
++			if (!strncasecmp(p, rom_names[i], len))
++				p[len - 1] = 'x';
++		}
++	}
++}
++
++#endif /* _LINUX_LINEAGE_HIDE_H */
