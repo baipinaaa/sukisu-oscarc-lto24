@@ -26,9 +26,10 @@
 #
 # 用法:
 #   1. 在 GitHub 新建仓库，把本文件放到 .github/workflows/ 下并 push
-#      (patches/ 下 4 个 patch 必须一起推: 50_add_susfs_in_kernel-5.4.patch,
-#       55_add_selinux_hide_access_filter.patch, 60_add_rekernel.patch,
-#       65_add_lineage_hide_procfs.patch)
+#      (patches/ 下 5 个 patch 必须一起推: 50_add_susfs_in_kernel-5.4.patch,
+#       55_add_selinux_hide_access_filter.patch,
+#       57_add_selinux_hide_context_guards.patch,
+#       60_add_rekernel.patch, 65_add_lineage_hide_procfs.patch)
 #   2. Actions 页面 → Build SukiSU LTO24 Kernel for oscarc → Run workflow
 #      ★ los_date 不再是必填的"当前 nightly": 现在会先用官方 API
 #        (download.lineageos.org/api/v2/devices/<device>/builds) 解析出
@@ -286,6 +287,23 @@ jobs:
           patch -p1 < ../../patches/55_add_selinux_hide_access_filter.patch
           echo "--- 验证过滤已集成 ---"
           grep -n "fsck_untrusted" kernel/feature/selinux_hide.c
+
+      # ============ 4.42 应用 selinux_hide context 守卫 patch (patch 57_) ============
+      # 55_ 只堵了 /sys/fs/selinux/access 一条出口。本步骤补上另外两条:
+      #   - my_write_context():   /sys/fs/selinux/context  校验(检测 adbroot 域是否存在)
+      #   - ksu_handle_selinux_setprocattr(): /proc/self/attr/current 换域到 adbroot
+      # 命中 u:r:adbroot:s0 一律返回 -EINVAL, 让探测方看到 "域不存在",
+      # 而不是 "域存在但被拒"; 与 55_ 的 access 过滤口径一致。
+      # 上游参考: null07089/Lineage_Hide 的 scripts/selinux_hide_patch.sh (3 处守卫),
+      # 其中 my_write_access() 那处与 55_ 重叠, 故这里只取另外两处。
+      # ★ 顺序依赖: 本 patch 的行号锚点基于 55_ 之后的文件, 必须紧跟 4.4 之后。
+      - name: 应用 selinux_hide context 守卫 patch
+        run: |
+          cd kernel/KernelSU
+          patch -p1 < ../../patches/57_add_selinux_hide_context_guards.patch
+          echo "--- 验证 context 守卫已集成 ---"
+          test "$(grep -c 'strnstr(.*adbroot' kernel/feature/selinux_hide.c)" -eq 2
+          grep -n 'strnstr(.*"adbroot"' kernel/feature/selinux_hide.c
 
       # ============ 4.5 应用 SUSFS 5.4 patch (fs/ 层, 隐藏 SELinux 核心) ============
       # 官方 SUSFS v2.2.0 只有 GKI 5.10 patch。oscarc 是高通 5.4 QGKI ——

@@ -1,0 +1,36 @@
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -141,6 +141,16 @@
+     if (likely(ksu_get_uid_t(current_uid()) < 10000)) {
+         return orig_context_write(file, buf, size);
+     }
++
++    /*
++     * ReSukiSU: 拒绝应用进程通过 /sys/fs/selinux/context 校验 adbroot 特权域。
++     * adbroot/su/fsck_untrusted 是原版策略自带的域, 备份策略里同样存在;
++     * 放行会让检测工具拿到 "域存在" 并与 ro.build.type=user 形成矛盾。
++     * buf 来自 write(), 不保证 NUL 结尾, 故用 strnstr() 限长查找。
++     */
++    if (strnstr(buf, "adbroot", size))
++        return -EINVAL;
++
+     char *canon = NULL;
+     u32 sid, len;
+     ssize_t length;
+@@ -342,6 +352,15 @@
+             str[size - 1] = 0;
+             size--;
+         }
++
++        /*
++         * ReSukiSU: 拒绝应用进程把自身切换到 adbroot 特权域。
++         * 与 my_write_context() 保持一致返回 -EINVAL, 让探测方看到
++         * "域不存在", 而不是 "域存在但切换被拒"。
++         */
++        if (strnstr(str, "adbroot", size))
++            return -EINVAL;
++
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+         error = security_context_to_sid_with_policy(backup_sepolicy, str, size, &sid, SECSID_NULL, GFP_KERNEL);
+ #elif defined(KSU_COMPAT_USE_SELINUX_STATE)

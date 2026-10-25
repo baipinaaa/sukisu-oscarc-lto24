@@ -46,10 +46,11 @@ Linux version 5.4.302-qgki-g4dac00dfc379 (root@3c794f190b77)
 | workaround patch | 60_/70_/80_ 三个 | **零个** (60_ 编号已复用给 Re:Kernel) |
 | 编译时间 | 40-90 分钟 | 60-120 分钟 (LTO 链接慢) |
 
-## 编译流程 (GitHub Actions, 30 步)
+## 编译流程 (GitHub Actions, 31 步)
 ```
 检出仓库 → 内核源码(缓存) → 依赖 → clang22(缓存) → 集成 ReSukiSU
-→ 55_ selinux_hide / SUSFS 5.4 patch / 65_ Lineage Hide procfs / 60_ Re:Kernel patch
+→ 55_ selinux_hide access / 57_ selinux_hide context / SUSFS 5.4 patch
+→ 65_ Lineage Hide procfs / 60_ Re:Kernel patch
 → trace include / tcpc / oplus_project 源码兼容
 → 配置 (LLVM=1 + holi-qgki_defconfig + KSU/SUSFS/REKERNEL 开关)
 → 编译 (LLVM=1 + ccache) → 解析官方 API 最新可用 nightly
@@ -410,6 +411,40 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
   `seq_get_buf` / `seq_commit` / `mangle_path` / `dcache.h` 四项 API 可见性，缺一即失败。
 - 可选性：不打这个 patch，内核与模块其余功能不受影响，只少这层进程内 procfs 路径伪装。
 
+## 11. selinux_hide context 守卫 (patch 57_)
+
+上游 [null07089/Lineage_Hide](https://github.com/null07089/Lineage_Hide) 的
+`scripts/selinux_hide_patch.sh` 给 KernelSU 的 `kernel/feature/selinux_hide.c`
+加 **3 处**特权域守卫。本仓库的 `55_` 已覆盖其中 `my_write_access()` 那一处
+（且比上游更宽：`fsck_untrusted` / `adbroot` / `:su:` 任一命中就 `goto out`），
+`57_` 补齐另外两处 `-EINVAL` 守卫：
+
+| 函数 | 出口 | 新增行为 |
+|---|---|---|
+| `my_write_context()` | `/sys/fs/selinux/context` | `strnstr(buf, "adbroot", size)` 命中则 `return -EINVAL` |
+| `ksu_handle_selinux_setprocattr()` | `/proc/self/attr/current` 换域 | `strnstr(str, "adbroot", size)` 命中则 `return -EINVAL` |
+
+**为何用 `strnstr()` 而非上游的 `strstr()`**：两处 `buf` / `str` 都直接来自
+`write()` 的用户缓冲区，**不保证 NUL 结尾**，`strstr()` 可能越界读；
+`strnstr()` 已在 `lib/string.c:993` 提供并 `EXPORT_SYMBOL`，按 `size` 限长。
+
+**为何统一 `-EINVAL`**：`selinux_hide` 的应答来自开机时备份的「干净」策略
+（`kernel/selinux/rules.c:154 backup_sepolicy`，在给 `ksu` 域授权之前快照），
+但那份策略的 sidtab 是新分配、`latest_granting` 硬编码为 1，**并不是完整镜像**。
+`adbroot` / `su` / `fsck_untrusted` 是原版策略自带的域，在备份策略里同样存在 ——
+放行校验就会让检测工具拿到「域存在」，与 `ro.build.type=user` 的伪装形成矛盾。
+统一回 `-EINVAL` 把差异压成「域不存在」。
+
+**集成要点**：
+- **顺序依赖**：本 patch 的行号基准是打完 `55_` 之后的文件，必须紧跟步骤 4.4
+  （workflow 里排在 **4.42**）。
+- 纯字符串判断 + 返回错误码，不改策略、不改 struct → 与 CFI、`module_layout` CRC 均无关。
+- 上游脚本**不能直接跑**：它的 `my_write_access()` 锚点是
+  `ksu_avc_has_perm_compat(...)`，而 ReSukiSU 4.2.0-rc3 实际是
+  `avc_has_perm(...)`，实测报
+  `error: cannot find the insertion point inside my_write_access(); the file was edited or reformatted - patch it manually`。
+- workflow 步骤 4.42 会校验 `grep -c 'strnstr(.*adbroot'` 恰为 **2**，缺一即失败。
+
 ## 备选: 关闭 CFI 的降级方案
 
 若 CFI enforcing 下 KSU 引发 panic (无法开机)：
@@ -421,10 +456,11 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
 
 ```
 sukisu-oscarc-lto24/
-├── .github/workflows/build-sukisu-lto24.yml   # 30 步 workflow
+├── .github/workflows/build-sukisu-lto24.yml   # 31 步 workflow
 ├── patches/
 │   ├── 50_add_susfs_in_kernel-5.4.patch       # SUSFS 5.4 移植 (含 sucompat ABI rc3 适配)
 │   ├── 55_add_selinux_hide_access_filter.patch # ReSukiSU selinux_hide access 探测过滤
+│   ├── 57_add_selinux_hide_context_guards.patch # selinux_hide context/setprocattr 的 adbroot 守卫 (必须紧跟 55_)
 │   ├── 60_add_rekernel.patch                  # Re:Kernel (binder/signal; drivers/ 挂载见 workflow 4.55)
 │   ├── 65_add_lineage_hide_procfs.patch       # Lineage Hide procfs 路径清洗 (必须排在 50_ 之后)
 │   └── 70_add_cfi_slowpath.patch              # 仅 enable_cfi=false 时应用 (CFI 关闭兜底)
