@@ -39,9 +39,15 @@
 #        (2026-10-15: mirrorbits 只保留最近几个 nightly 的 /full/ 目录, 写死
 #         20261012 的直链 404 导致 build 104858632193 失败)
 #      ★ los_version 决定挑哪个版本的 nightly (如 24.0 → 只挑 version=24.0 的 build)
-#      ★ 内核 commit 固定为 4dac00dfc3793cf3de9ceefd89a3dc24cb03f468
-#        (= lineage-24.0 HEAD, 官方 build-manifest 实测);
+#      ★ 内核 commit 固定为 22bfaae83596ffb4984c3b6faa43c26f15e03059
+#        (= lineage-24.0 HEAD, 官方 20261110 build-manifest 实测);
 #        换 nightly 日期前, 先用 build-manifest.xml 核对内核 revision!
+#        ★ 内核 revision 时间线 (oscarc / lineage-24.0):
+#          20261027 / 20261103 nightly -> 4dac00dfc3793cf3de9ceefd89a3dc24cb03f468
+#          20261110 nightly 起         -> 22bfaae83596ffb4984c3b6faa43c26f15e03059
+#        (2026-11-12 更新: 上游 27 个 commit / 37 个文件, 含 posix-cpu-timers
+#         UAF、nfc llcp UAF、HID OOB、kgsl ioctl、16K vma padding、SELinux
+#         securityfs+functionfs genfscon、holi_QGKI.config 移除 mem-offline)
 #   3. 构建完成(约 60-120 分钟, LTO 链接较慢)后下载 artifact: new_boot.img
 #   4. fastboot 双槽刷入 (见 README.md)
 #
@@ -90,7 +96,7 @@ on:
         description: '兜底 nightly 日期 YYYYMMDD (正常由官方 API 自动解析最新可用 build; 仅 API 不可用时用此日期拼直链)'
         required: false
         type: string
-        default: '20261012'
+        default: '20261110'
       custom_version:
         description: '自定义版本名 (可选，显示在 uname -r)'
         required: false
@@ -102,7 +108,7 @@ on:
         type: boolean
         default: true
       resukisu_ref:
-        description: 'ReSukiSU 版本钉扎 (commit SHA / tag)。默认 fa8311f6 = v4.2.0-rc3，其 sucompat ABI 已由 patches/50_ 适配；填 latest 用最新版（ABI 可能又变，构建时会校验）'
+        description: 'ReSukiSU 版本钉扎 (commit SHA / tag)。默认 fa8311f6 = v4.2.0-rc3，其 sucompat ABI 已由 patches/50_ 适配。⚠ main 分支已改名为 Baka-SU/BakaSU 且重写了 kernel/feature/selinux_hide.c (2145→1837 行)，使 55_/57_/58_ 三个补丁全部失效，故请勿填 latest。'
         required: false
         type: string
         default: 'fa8311f632a215b5381ec644627c6198d1e8a13e'
@@ -125,27 +131,32 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: kernel
-          # ★ v3: 固定到官方 commit 4dac00dfc379 (20261012/0914/0907 nightly 官方内核)
-          #   旧缓存 c8c87694a044 是 2026-01-27 的树, 与官方差 1090 个 commit,
-          #   导致 module_layout 等 23 个符号 CRC 差异, 必须失效
-          key: kernel-oscarc-lto24-${{ github.event.inputs.kernel_branch }}-4dac00dfc379-v3
+          # ★ v4: 固定到官方 commit 22bfaae83596 (20261110 nightly 官方内核)
+          #   v3 是 4dac00dfc379 (20261027/20261103 nightly), 官方已替换,
+          #   继续用会导致 vermagic/CRC 与 20261110 vendor 模块不匹配
+          key: kernel-oscarc-lto24-${{ github.event.inputs.kernel_branch }}-22bfaae83596-v1
 
-      - name: 下载 oscarc 内核源码 (LineageOS, 固定官方 commit 4dac00dfc379)
+      - name: 下载 oscarc 内核源码 (LineageOS, 固定官方 commit 22bfaae83596)
         if: steps.cache-kernel.outputs.cache-hit != 'true'
         run: |
-          # ★ 必须 checkout 到官方 nightly 对应的 commit 4dac00dfc379:
-          #   20261012 / 20261012 / 20261012 三份 build-manifest.xml 均写
-          #     LineageOS/android_kernel_realme_sm6375 revision="4dac00dfc3793cf3de9ceefd89a3dc24cb03f468"
-          #   (= lineage-24.0 分支 HEAD, 2026-08-22 "arm64: configs:
-          #    Regenerate Q/GKI holi defconfigs")
-          #   旧值 c8c87694a044 (2026-01-27) 与官方差 1090 个 commit, 导致
-          #   module_layout 等 23 个符号 CRC 与官方 vendor 模块不一致
-          #   (8-17 时期实测: HEAD vs 官方树 .symtypes diff 4~20 行)
+          # ★ 必须 checkout 到官方 nightly 对应的 commit 22bfaae83596:
+          #   20261110 build-manifest.xml 写
+          #     LineageOS/android_kernel_realme_sm6375 revision="22bfaae83596ffb4984c3b6faa43c26f15e03059"
+          #   (20261027 / 20261103 仍是 4dac00dfc3793cf3de9ceefd89a3dc24cb03f468)
+          #   = lineage-24.0 分支 HEAD, 2026-11-07 merge lineage-20 sm8350
+          #   旧值 4dac00dfc379 (2026-09-15) 与官方差 27 个 commit / 37 个文件
           git clone --depth 1 --branch "${{ github.event.inputs.kernel_branch }}" \
             https://github.com/LineageOS/android_kernel_realme_sm6375 kernel
           cd kernel
-          git fetch origin 4dac00dfc3793cf3de9ceefd89a3dc24cb03f468 --depth=1
-          git checkout 4dac00dfc3793cf3de9ceefd89a3dc24cb03f468
+          git fetch origin 22bfaae83596ffb4984c3b6faa43c26f15e03059 --depth=1
+          git checkout 22bfaae83596ffb4984c3b6faa43c26f15e03059
+          # ★ 硬校验: fetch/checkout 静默失败会让整树编错, 必须挡住
+          ACTUAL=$(git rev-parse HEAD)
+          EXPECT=22bfaae83596ffb4984c3b6faa43c26f15e03059
+          if [ "$ACTUAL" != "$EXPECT" ]; then
+            echo "!! 内核 commit 不符: 期望 $EXPECT 实际 $ACTUAL"
+            exit 1
+          fi
           echo "内核 commit: $(git rev-parse HEAD)"
           echo "内核分支: ${{ github.event.inputs.kernel_branch }}"
           ls arch/arm64/configs/vendor/ | grep holi
@@ -155,7 +166,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: kernel
-          key: kernel-oscarc-lto24-${{ github.event.inputs.kernel_branch }}-4dac00dfc379-v3
+          key: kernel-oscarc-lto24-${{ github.event.inputs.kernel_branch }}-22bfaae83596-v1
 
       # ============ 2. 编译依赖 ============
       - name: 安装编译依赖
@@ -213,9 +224,16 @@ jobs:
         run: |
           cd kernel
           rm -rf KernelSU
-          git clone https://github.com/ReSukiSU/ReSukiSU KernelSU
+          # ★ 仓库已改名: ReSukiSU/ReSukiSU -> Baka-SU/BakaSU (旧 URL 会 301 重定向,
+          #   git clone 仍可用, 但这里直接用新名避免未来旧名彻底失效)。
+          #   fork 版保留 ReSukiSU 旧名不受影响。
+          git clone https://github.com/Baka-SU/BakaSU KernelSU
           cd KernelSU
           # ★ 版本钉扎: 默认 fa8311f6 = v4.2.0-rc3。
+          #   ★ 2026-11-12: 上游 main 已到 548d1dda06 (2026-11-09), 其
+          #   kernel/feature/selinux_hide.c 从 2145 行缩到 1837 行,
+          #   实测 55_/57_/58_ 在 main 上全部 FAIL (Hunk #1/#2 均失配),
+          #   因此 resukisu_ref 必须保持钉在 rc3 系列, 不要填 latest。
           #   rc3 在 20261012 无法启动的根因已在 patches/50_ 中修好 (见文件头注释):
           #   rc3 commit 03b60f2 把 ksu_handle_faccessat / ksu_handle_stat 的调用约定
           #   由 (const char __user **) 改成 (struct filename **) 并删掉了 >=6.1.0 护栏。
@@ -556,8 +574,8 @@ jobs:
           # ★ LOCALVERSION= 空值 (必须!): CONFIG_LOCALVERSION_AUTO=n 时
           #   scripts/setlocalversion 若发现 LOCALVERSION 环境变量未设置 且 仓库
           #   不在 annotated tag 上 (GitHub 浅克隆必然) -> 自动追加 '+'
-          #   -> UTS_RELEASE/vermagic 变 5.4.302-qgki-g4dac00dfc379+ 与官方
-          #   模块 (4dac00dfc379 无+) 不匹配, check_vermagic 拒绝所有 vendor 模块
+          #   -> UTS_RELEASE/vermagic 变 5.4.302-qgki-g22bfaae83596+ 与官方
+          #   模块 (22bfaae83596 无+) 不匹配, check_vermagic 拒绝所有 vendor 模块
           #   (实测: wifi/蓝牙/音频全挂, run 32489911904)。空值即可 (${LOCALVERSION+set}=set)
           export LOCALVERSION=
           # LLVM=1: 全套 LLVM 工具链 (clang + ld.lld + llvm-ar + llvm-nm + llvm-strip)
@@ -576,7 +594,7 @@ jobs:
             -e KSU_SUSFS_SUS_MAP \
             -d KSU_TRACEPOINT_HOOK \
             -d CONFIG_LOCALVERSION_AUTO \
-            --set-str CONFIG_LOCALVERSION "-qgki-g4dac00dfc379" || true
+            --set-str CONFIG_LOCALVERSION "-qgki-g22bfaae83596" || true
           if [ -n "${{ github.event.inputs.custom_version }}" ]; then
             ./scripts/config --set-str LOCALVERSION "-${{ github.event.inputs.custom_version }}"
           fi
@@ -623,7 +641,7 @@ jobs:
           echo "$VER"
           # ★ 版本串验证: 必须与官方完全一致 (无 '+') 否则 vermagic 不匹配
           #   官方模块全被拒 (wifi/蓝牙/音频全挂, run 32489911904 教训)
-          if echo "$VER" | grep -qE 'qgki-g4dac00dfc379\+'; then
+          if echo "$VER" | grep -qE 'qgki-g22bfaae83596\+'; then
             echo "!! 版本串带 '+', vermagic 与官方模块不匹配, 构建失败"
             exit 1
           fi
@@ -639,7 +657,15 @@ jobs:
           #   40 个符号中 17 个未变、23 个已变 (根因: 8-22 commit
           #   "arm64: configs: Regenerate Q/GKI holi defconfigs" 改了
           #   holi-qgki_defconfig -> struct 展开变化)。
-          #   新值从 20261012 官方 boot.img 的 __kcrctab 反查:
+          #   ★★ 2026-11-12: 官方内核再换到 22bfaae83596 (20261110 nightly)。
+          #   上游 27 个 commit / 37 个文件, 其中 holi_QGKI.config 删了 6 项
+          #   (MEMORY_HOTPLUG / MEMORY_HOTREMOVE / QCOM_MEM_OFFLINE /
+          #    OVERRIDE_MEMORY_LIMIT / HOTPLUG_SIZE_BITS / MEMORY_HOTPLUG_MOVABLE_NODE),
+          #   且 include/linux/posix-timers.h 改了 1 行 -> genksyms 展开可能变。
+          #   ⇒ 下方 EXPECTED 表的 40 个值 ****待 20261110 boot.img 复核****:
+          #     CI 首跑若 module_layout 不匹配即确认需重算, 反查算法同上
+          #     (vaddr = 0xffffffc010080000 + file_off; 6*Y - P = const)。
+          #   新值从 20261012 官方 boot.img 的 __kcrctab 反查 (历史值; 若 20261110 需重算见上方注):
           #     vaddr = 0xffffffc010080000 + file_off;
           #     同一符号满足 6*Y - P = const (P=__ksymtab 项地址, Y=__kcrctab 项地址),
           #     17 个旧值命中锚点定出 const = 0xb74cb30, 再由 const 解出 23 个
@@ -700,13 +726,13 @@ jobs:
       #   4 个文件的 genksyms (KBUILD_SYMTYPES=1 生成 .symtypes) 对比:
       #     - 官方纯树也得到同一值 -> 官方 Image 含本地修改(非纯树) -> 走 CRC 强制覆盖方案
       #     - 官方纯树得到官方值     -> 树/config 差异 -> diff .symtypes 直接定位差异 token
-      # ★ 2026-09-24: 官方内核已改用 4dac00dfc379 (= lineage-24.0 HEAD, 2026-08-22
-      #   "arm64: configs: Regenerate Q/GKI holi defconfigs"), 本项目 checkout 的就是
-      #   官方树, "树不一致" 这一根因已消除; 且官方 Image 的 module_layout 现在是
-      #   0x32aa09e1 (与旧 HEAD 树实测值一致, 已由 20261012 官方 boot.img 反查确认)。
+      # ★ 2026-11-12: 官方内核现为 22bfaae83596 (20261110 nightly; 20261027/
+      #   20261103 仍是 4dac00dfc379), 本项目 checkout 的就是官方树,
+      #   "树不一致" 这一根因已消除 (历史值详见文件头时间线)。
+      #   module_layout 历史参考值: 4dac00dfc379 时为 0x32aa09e1。
       #   因此本诊断不再每次运行 (原 if: always() 每次白下载 200-300MB tarball +
       #   双份编译), 改为仅在前面步骤失败时运行, 保留定位能力。
-      - name: genksyms 双树诊断 (HEAD vs 官方commit 4dac00dfc379)
+      - name: genksyms 双树诊断 (HEAD vs 官方commit 22bfaae83596)
         if: failure()
         run: |
           set -x
@@ -730,7 +756,7 @@ jobs:
           # ★ 根治方案: 不拉 git 历史 (浅克隆 fetch 特定 sha / shallow-since /
           #   unshallow 在 GitHub 上不可靠), 直接用 GitHub archive tarball
           #   下载官方 commit 完整树 (runner 在 GitHub 内网, github.com 必通)
-          OFF_SHA=4dac00dfc3793cf3de9ceefd89a3dc24cb03f468
+          OFF_SHA=22bfaae83596ffb4984c3b6faa43c26f15e03059
           echo "===== [9b] 官方 commit $OFF_SHA 对照树 ====="
           SKIP_OFF=0
           rm -rf /tmp/otree && mkdir -p /tmp/otree
@@ -788,7 +814,7 @@ jobs:
             echo "module.symtypes diff 行数: $D (官方Image module_layout=0x32aa09e1)"
             if [ "$D" = "0" ]; then
               echo "判定: HEAD == 官方纯树 (checkout 已生效, 构建树 == 官方 Image 树)"
-              echo "      -> 若上方 CRC 校验仍失败, 则官方 Image 含本地修改(非纯 4dac00dfc379)"
+              echo "      -> 若上方 CRC 校验仍失败, 则官方 Image 含本地修改(非纯 22bfaae83596)"
               echo "      -> 走 CRC 强制覆盖方案 (改 genksyms 对 MISS 符号输出固定 CRC)"
             else
               echo "判定: 仍有树差异 -> 看上方 diff 定位修复"

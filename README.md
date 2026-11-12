@@ -14,13 +14,21 @@ CONFIG_LD_IS_LLD=y   CONFIG_CLANG_VERSION=220002
 CONFIG_LOCALVERSION="-qgki"   CONFIG_LOCALVERSION_AUTO=y
 ```
 
-配合官方 boot.img 版本串：
+配合官方 boot.img 版本串（20261012 nightly，内核 revision `4dac00dfc379`）：
 
 ```
 Linux version 5.4.302-qgki-g4dac00dfc379 (root@3c794f190b77)
 (Android (15071444, +pgo, +bolt, +lto, +mlgo, based on r596125)
  clang version 22.0.2 (...), LLD 22.0.2 (...))
 ```
+
+> ★ **2026-11-12 更新**：`20261110` nightly 起官方内核 revision 改为
+> `22bfaae83596ffb4984c3b6faa43c26f15e03059`，版本串相应变为
+> `5.4.302-qgki-g22bfaae83596`。依据：官方 `build-manifest.xml` 中
+> `<project name="LineageOS/android_kernel_realme_sm6375" ...
+> revision="22bfaae83596ffb4984c3b6faa43c26f15e03059">`
+> （`20261027` / `20261103` 仍是 `4dac00dfc379`）。后缀位数来自
+> `scripts/setlocalversion` 的 `git describe --abbrev=12`。
 
 **官方 = clang22 + LTO(THIN) + CFI + LLD**。之前 sukisu-oscarc 用 GNU ld 编译，
 `LD_IS_LLD=n` → Kconfig 依赖不满足 → `LTO_CLANG=y` 被**自动降级为 LTO_NONE**，
@@ -75,7 +83,7 @@ GET https://download.lineageos.org/api/v2/devices/oscarc/builds
 | 输入 | 作用 | 默认 |
 |---|---|---|
 | `los_version` | 挑哪个版本的 nightly（`24.0` 不会串到其他大版本） | `24.0` |
-| `los_date` | **兜底日期**：仅官方 API 不可用时用它拼直链 | `20261012` |
+| `los_date` | **兜底日期**：仅官方 API 不可用时用它拼直链 | `20261110` |
 
 解析结果（`SOURCE` / `LOS_VERSION` / `LOS_DATE` / `BOOT_URL` /
 `BOOT_URL_MIRROR` / `BOOT_SHA256` / `BOOT_SIZE` / `ZIP_URL` / `ZIP_SHA256`）
@@ -86,9 +94,13 @@ GET https://download.lineageos.org/api/v2/devices/oscarc/builds
   并用 payload-dumper 从 `payload.bin` 提取 boot；
 - 下载完成后用官方 API 的 `sha256` / `size` 做内容校验（API fallback 时无 sha，跳过）。
 
-> 本项目对应 oscarc 官方唯一的 `lineage-24.0`（首个 nightly = `20261012`，内核
-> revision `4dac00dfc379`）。`20261012` 的 `boot.img` sha256 =
-> `0ebd0caa5871ee0ca676fd726db0060d42fa580986172423bd4f2f688df525b9`，size `167772160`。
+> 本项目对应 oscarc 官方唯一的 `lineage-24.0`（首个 nightly = `20261012`）。
+> **当前（2026-11-12）最新 nightly = `20261110`，内核 revision
+> `22bfaae83596`**；其 `boot.img` sha256 =
+> `8fdfcab2a0bfa7da043a11292c917ef1890417a4057671355b89738c29fd4958`，size `167772160`。
+> 历史：`20261012`（内核 `4dac00dfc379`）的 `boot.img` sha256 =
+> `0ebd0caa5871ee0ca676fd726db0060d42fa580986172423bd4f2f688df525b9`，同 size。
+> 注意 `20261012` 已被 mirrorbits 清理，API 现只返回 `20261110` / `20261103` / `20261027`。
 > 设备为 **oscarc (Realme Q5)**，勿与旧项目 oscar / lineage-23.2 混用。
 
 **关键编译命令**：
@@ -103,7 +115,7 @@ make LLVM=1 ARCH=arm64 KCFLAGS='-I. -Idrivers/usb/typec/tcpc' vendor/holi-qgki_d
   -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
   -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -e KSU_SUSFS_OPEN_REDIRECT \
   -e KSU_SUSFS_SUS_MAP -d KSU_TRACEPOINT_HOOK \
-  -d CONFIG_LOCALVERSION_AUTO --set-str CONFIG_LOCALVERSION "-qgki-g4dac00dfc379"
+  -d CONFIG_LOCALVERSION_AUTO --set-str CONFIG_LOCALVERSION "-qgki-g22bfaae83596"
 make LLVM=1 ARCH=arm64 olddefconfig
 
 # 编译
@@ -139,7 +151,7 @@ grep -E "CONFIG_LTO|CONFIG_CFI|CONFIG_THINLTO|CONFIG_LD_IS_LLD" .config
 | CONFIG_HAVE_ARCH_PREL32_RELOCATIONS | 无 | 无 PREL32 |
 | CONFIG_MODVERSIONS | y | CRC 校验 |
 | CONFIG_KPROBES | y | **kprobe 可用 (SUSFS 依赖)** |
-| CONFIG_LOCALVERSION | "-qgki" + AUTO | 最终 -qgki-g4dac00dfc379 |
+| CONFIG_LOCALVERSION | "-qgki" + AUTO | 最终 -qgki-g22bfaae83596 |
 
 ### 2. ReSukiSU 与 CFI 兼容性 (已验证源码)
 
@@ -198,9 +210,10 @@ grep -E "CONFIG_LTO|CONFIG_CFI|CONFIG_THINLTO|CONFIG_LD_IS_LLD" .config
 
 ### 7. 版本号 / vermagic
 
-- 保持 `CONFIG_LOCALVERSION="-qgki-g4dac00dfc379"` (写死官方串) +
+- 保持 `CONFIG_LOCALVERSION="-qgki-g22bfaae83596"` (写死官方串) +
   `-d CONFIG_LOCALVERSION_AUTO` → vermagic 与官方一致
-  (`5.4.302-qgki-g4dac00dfc379 SMP preempt mod_unload modversions aarch64`)。
+  (`5.4.302-qgki-g22bfaae83596 SMP preempt mod_unload modversions aarch64`)。
+  ⚠ 官方一换内核 revision 就必须同步改这里，否则 vendor 模块全被 `check_vermagic` 拒。
 - LTO/CFI 编译后 struct module 布局与官方一致 → module_layout CRC 自动匹配，
   不需要 60_ patch 跳 CRC。
 
@@ -221,6 +234,7 @@ version of symbol module_layout`)。workflow 因此在编译步骤尾部加了
 | 20260817（23.2 时期，手机当时在跑的） | `c8c87694a044` | 2026-01-27 | `0x392bc26a` |
 | 23.2 后期 (20260907/0914/0921) | `84e7d691ee3a` | 2026-08-22 | `0x32aa09e1` |
 | **24.0 首个 (20261012)** | `4dac00dfc379` | 2026-08-22 | `0x32aa09e1` |
+| **24.0 (20261110 起)** | `22bfaae83596` | 2026-11-07 | **待复核** |
 
 > `4dac00dfc379` = `lineage-24.0` 分支 HEAD（commit message
 > "arm64: configs: Regenerate Q/GKI holi defconfigs"）；`84e7d691ee3a` 为
@@ -343,6 +357,51 @@ HEAD），我们 checkout 的就是官方树，"树不一致" 这一根因已消
 反查确认）。因此该步骤由 `if: always()` 改为 **`if: failure()`** ——
 不再每次白下载 200-300MB tarball + 双份编译，仅在前面步骤失败时运行，
 保留定位能力。
+
+**2026-11-12 变更**：官方 `20261110` nightly 的内核换成 `22bfaae83596`
+（含 27 个 commit / 37 个文件）。需要重新关注的两点：
+
+1. `arch/arm64/configs/vendor/holi_QGKI.config` 删了 6 项：
+   `CONFIG_HOTPLUG_SIZE_BITS=29`、`CONFIG_MEMORY_HOTPLUG_DEFAULT_ONLINE=y`、
+   `CONFIG_MEMORY_HOTPLUG_MOVABLE_NODE=y`、`CONFIG_MEMORY_HOTREMOVE=y`、
+   `CONFIG_QCOM_MEM_OFFLINE=y`、`CONFIG_OVERRIDE_MEMORY_LIMIT=y`
+   （对应 commit `8a0545202ae0` 移除 qc mem-offline driver、`1322227a87cf`
+   删除 dts mem-offline node 以彻底禁用 PASR）。
+2. `include/linux/posix-timers.h`、`kernel/{signal.c,exit.c}`、
+   `kernel/time/posix-cpu-timers.c` 被改（UAF 修复）。
+
+⇒ config 变了意味着 genksyms 展开可能变。workflow 里的 40 个
+`EXPECTED` CRC 值**来源于 20261012 boot.img，待 20261110 复核**：
+CI 首跑若 `module_layout` 不匹配，按 8.2 的反查算法对 20261110 的
+`boot.img` 重算即可。
+
+#### 8.3 补丁与 22bfaae83596 的兼容性（2026-11-12 实测）
+
+无工作区 dry-run 方法：`git read-tree HEAD` 载入 index，再
+`git apply --cached <patch>`（不动工作区文件）。结果：
+
+| 补丁 | 结果 | 备注 |
+|---|---|---|
+| `50_add_susfs_in_kernel-5.4` | **OK** | `mm/memory.c` Hunk #2 offset +9（上游 16K vma padding 改过该文件，hunk 不重叠） |
+| `60_add_rekernel` | **OK** | `kernel/signal.c` 上游改了 `lock_task_sighand()`（约 1375 行），与我们 56/1287 行两个 hunk 相距够远 |
+| `65_add_lineage_hide_procfs` | **OK** | **必须在 50_ 之后打**：其 hunk 1 上下文 `#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MAP) ...` 由 50_ 引入 |
+| `70_add_cfi_slowpath` | **OK** | `kernel/module.c` 本次上游未改 |
+| `55_` / `57_` / `58_` | **OK（按 rc3）** | 只改 ReSukiSU 树 `kernel/feature/selinux_hide.c`；rc3 上 offset 分别为 0 / -10 / -20 |
+
+合计 `33 files changed, 3666 insertions(+)`。
+
+#### 8.4 ReSukiSU 上游改名与版本钉扎（2026-11-12）
+
+- 上游仓库已从 `ReSukiSU/ReSukiSU` 改名为 **`Baka-SU/BakaSU`**（旧 URL 会 301
+  重定向，`git clone` 仍能用；workflow 已改为直接写新名）。
+- 最新 release 仍是 **`v4.2.0-rc3`（2026-09-22）**，workflow 默认钉的
+  `fa8311f632a215b5381ec644627c6198d1e8a13e` 就是它。
+- 上游 `main` 已到 `548d1dda06`（2026-11-09），其
+  `kernel/feature/selinux_hide.c` 由 rc3 的 **2145 行缩到 1837 行**（两者
+  diff 达 1948 行），实测 `55_` / `57_` / `58_` 在 main 上 **全部 FAIL**
+  （`Hunk #1 FAILED at 243` / `Hunk #1 FAILED at 141` + `Hunk #2 FAILED at 342` /
+  `Hunk #1 FAILED at 347`）。
+- ⇒ `resukisu_ref` **不要填 `latest`**。要跟 main 必须先重做这三个补丁。
 
 诊断产物（head_*.symtypes / off_*.symtypes / diff_*.txt）随 artifact 上传，
 供本地精确分析。

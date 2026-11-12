@@ -10,7 +10,7 @@
 
 用法:
   python3 _tools/resolve_los_build.py --device oscarc --version 24.0 \
-      --fallback-date 20261012            # stdout 为 KEY=VALUE, 可直接 eval
+      --fallback-date 20261110            # stdout 为 KEY=VALUE, 可直接 eval
   eval "$(python3 _tools/resolve_los_build.py --device oscarc --version 24.0)"
   python3 _tools/resolve_los_build.py --device oscarc --version 24.0 --json
   # 离线自测: 用已保存的 API 响应
