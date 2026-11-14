@@ -1,0 +1,25 @@
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -347,7 +347,20 @@ ksu_handle_selinux_setprocattr
+         return error;
+     }
+ 
+-    if (size && str[0] && str[0] != '\n') {
++    /*
++     * ReSukiSU: 与 stock selinux_setprocattr() 保持完全一致的转换条件。
++     * stock 的条件是 size 非零、首字节非零且首字节不是换行符: 首字节为换行时视为
++     * "未指定上下文", 跳过 SID 转换, 之后因 sid==0 在 current 分支返回 -EINVAL。
++     * 这里若沿用该换行短路, 首字符为换行的载荷会穿透到 stock 路径, 再次执行
++     * PROCESS__SETCURRENT 的 avc_has_perm(), 而普通非法载荷在本函数内就已返回;
++     * 两条等价失败路径的可观测差异 (AVC lookup 次数 1 对 2、耗时差数百 ns) 会
++     * 被用作 "存在预转换解析" 的旁证。去掉换行短路后两类载荷都走本函数的备份
++     * 策略解析并同样返回 -EINVAL, 对调用者完全等价, 差异随之消失。
++     * 注: 本函数开头已过滤 name != "current", 故 exec/fscreate/keycreate/
++     * sockcreate 的 "空载荷 = 清除标签" 语义不受影响; 而 current 分支在 sid==0
++     * 时本就返回 -EINVAL, 不存在依赖空载荷成功的合法用法。
++     */
++    if (size && str[0]) {
+         if (str[size - 1] == '\n') {
+             str[size - 1] = 0;
+             size--;

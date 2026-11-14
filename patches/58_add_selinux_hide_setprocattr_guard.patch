@@ -1,10 +1,10 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -347,7 +347,20 @@ ksu_handle_selinux_setprocattr
+@@ -502,7 +502,20 @@
          return error;
-     }
  
+     /* Obtain a SID for the context, if one was specified. */
 -    if (size && str[0] && str[0] != '\n') {
 +    /*
 +     * ReSukiSU: 与 stock selinux_setprocattr() 保持完全一致的转换条件。

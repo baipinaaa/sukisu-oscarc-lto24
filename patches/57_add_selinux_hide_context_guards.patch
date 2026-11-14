@@ -1,10 +1,10 @@
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -141,6 +141,16 @@
-     if (likely(ksu_get_uid_t(current_uid()) < 10000)) {
+@@ -246,6 +246,15 @@
          return orig_context_write(file, buf, size);
      }
+ #endif
 +
 +    /*
 +     * ReSukiSU: 拒绝应用进程通过 /sys/fs/selinux/context 校验 adbroot 特权域。
@@ -14,11 +14,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +     */
 +    if (strnstr(buf, "adbroot", size))
 +        return -EINVAL;
-+
      char *canon = NULL;
      u32 sid, len;
      ssize_t length;
-@@ -342,6 +352,15 @@
+@@ -498,6 +507,14 @@
              str[size - 1] = 0;
              size--;
          }
@@ -30,7 +29,6 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +         */
 +        if (strnstr(str, "adbroot", size))
 +            return -EINVAL;
-+
- #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-         error = security_context_to_sid_with_policy(backup_sepolicy, str, size, &sid, SECSID_NULL, GFP_KERNEL);
- #elif defined(KSU_COMPAT_USE_SELINUX_STATE)
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT)
+         error2 = security_context_to_sid_with_policy(backup_sepolicy, value, size, &tmp_sid, SECSID_NULL, GFP_KERNEL,
+                                                      &sid, &error);

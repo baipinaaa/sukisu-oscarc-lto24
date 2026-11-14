@@ -386,22 +386,40 @@ CI 首跑若 `module_layout` 不匹配，按 8.2 的反查算法对 20261110 的
 | `60_add_rekernel` | **OK** | `kernel/signal.c` 上游改了 `lock_task_sighand()`（约 1375 行），与我们 56/1287 行两个 hunk 相距够远 |
 | `65_add_lineage_hide_procfs` | **OK** | **必须在 50_ 之后打**：其 hunk 1 上下文 `#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MAP) ...` 由 50_ 引入 |
 | `70_add_cfi_slowpath` | **OK** | `kernel/module.c` 本次上游未改 |
-| `55_` / `57_` / `58_` | **OK（按 rc3）** | 只改 ReSukiSU 树 `kernel/feature/selinux_hide.c`；rc3 上 offset 分别为 0 / -10 / -20 |
+| `55_` / `57_` / `58_` | **OK（按 BakaSU main 548d1dda）** | 只改 BakaSU 树 `kernel/feature/selinux_hide.c`；按 main 的 1837 行棘点重做后 offset 均为 0。适配 rc3 的旧版存于 `patches/bakasu-rc3/` |
 
 合计 `33 files changed, 3666 insertions(+)`。
 
-#### 8.4 ReSukiSU 上游改名与版本钉扎（2026-11-12）
+#### 8.4 BakaSU 升级：rc3 → main（2026-11-14）
 
 - 上游仓库已从 `ReSukiSU/ReSukiSU` 改名为 **`Baka-SU/BakaSU`**（旧 URL 会 301
   重定向，`git clone` 仍能用；workflow 已改为直接写新名）。
-- 最新 release 仍是 **`v4.2.0-rc3`（2026-09-22）**，workflow 默认钉的
-  `fa8311f632a215b5381ec644627c6198d1e8a13e` 就是它。
-- 上游 `main` 已到 `548d1dda06`（2026-11-09），其
-  `kernel/feature/selinux_hide.c` 由 rc3 的 **2145 行缩到 1837 行**（两者
-  diff 达 1948 行），实测 `55_` / `57_` / `58_` 在 main 上 **全部 FAIL**
-  （`Hunk #1 FAILED at 243` / `Hunk #1 FAILED at 141` + `Hunk #2 FAILED at 342` /
-  `Hunk #1 FAILED at 347`）。
-- ⇒ `resukisu_ref` **不要填 `latest`**。要跟 main 必须先重做这三个补丁。
+- **已从 `v4.2.0-rc3`（`fa8311f6`）升级到 `main`（`548d1dda06`，2026-11-09）**。
+  最新 release 仍停在 rc3，但 main 持续修 bug，且带来了实质的隐藏能力增强。
+- rc3 → main 的 `kernel/` 差异（共 550 文件 +57271/-37209，其中 manager/app 占大头）：
+
+| 变化 | rc3 | main | 意义 |
+|---|---|---|---|
+| **AVC dump hook** | 无 | `security_dump_masked_av_fn` / `context_struct_compute_av_fn` / `legacy_*` 三组函数指针 hook | **实质增强**：被拒的 AVC 不再在 dmesg 留 masked-av 痕迹 |
+| **preinit**（全新 52 文件 +7365） | 无 | `__init` 阶段把 nolibc 静态 ELF 塞进匿名 shmem，让 PID 1 执行；`modules.rc` 可放 **`/metadata/vold/ksu`** | 提前于 init 二阶段挂载，且该路径不在 `/data/adb/` 下，绕开 duck 的 `is_suspicious_loader_path()` |
+| **UAPI 版本** | `v4` | `v6` | 新增 `KSU_IOCTL_LOOKUP_SYMBOLS`(`_IOW('K',22)`)、`KSU_GET_INFO_FLAG_PREINIT`、`EVENT_SERVICES=4`、`force_feature` 启动参数。**kernel 与 manager APK 必须配套** |
+| **SELinux API 兼容探测** | 无 | `kernel/tools/kernel_compat.mk` +49 行：`KSU_COMPAT_HAS_EXTENDED_PERMS` / `_STRICTER_MLS_CONTEXT_TO_SID` / `_CONTEXT_ADD_HASH` / `_NR_COMPAT32_SYSCALLS` | 5.4 的 `services.c` 若有 `context_add_hash` 会走与 rc3 不同的代码路径 |
+| **compat(32位) syscall hook** | 无 | `kernel/hook/arm64/syscall_hook.c` +278：新增 `compat_sys_call_table` hook | 64 位机制未变，仍走 `ksu_patch_text` 改 `sys_call_table`，故 `60_` rekernel 仍有效 |
+| **module_load_filter → module_blacklist** | 336 行 | 删掉，重写为 143 行 | 模块加载过滤逻辑重做 |
+| **新 feature** | — | `KSU_FEATURE_SHELL_SU_ADB_ONLY = 6` | 只允许 adb shell 拿 su |
+| **sulog** | — | `kernel/sulog/event.c` +3 -41 | 精简 |
+
+- **`50_` 无需改动**（已逐项验证）：`ksu_handle_faccessat/stat` 在 `CONFIG_KSU_SUSFS`
+  下仍是 `struct filename **` 约定；`KSU_COMPAT_USE_STATIC_KEY` 在 5.4 仍定义
+  （`compat/kernel_compat.h:379`，条件 `>= 4.3`）→ 与 50_ 的
+  `extern struct static_key_true ksu_su_compat_enabled` 类型一致；
+  `__ksu_is_allow_uid_for_current` 在 `kernel/policy/allowlist.c:311` 仍在；
+  4 个 Kconfig 选项名全部未变。
+- **`55_` / `57_` / `58_` 已按 main 重做**（棘点行号：`my_write_access` `:307` /
+  `sscanf` `:336`；`my_write_context` `:241` / `:246`；setprocattr `str[size-1]`
+  `:487-488`；换行短路条件 `:452`）。**rc3 与 main 的错点不通用**：适配 rc3
+  的旧版存于 `patches/bakasu-rc3/`，回退时三个文件必须成对替换。
+- ⚠ `resukisu_ref` **不要填 `latest`**（内容会漂移，补丁棘点可能再次失配）。
 
 诊断产物（head_*.symtypes / off_*.symtypes / diff_*.txt）随 artifact 上传，
 供本地精确分析。
@@ -571,10 +589,14 @@ constexpr char kPayloadB[] = "\n:r:__selinux_hide_probe_invalid__:s0";
 sukisu-oscarc-lto24/
 ├── .github/workflows/build-sukisu-lto24.yml   # 32 步 workflow
 ├── patches/
-│   ├── 50_add_susfs_in_kernel-5.4.patch       # SUSFS 5.4 移植 (含 sucompat ABI rc3 适配)
-│   ├── 55_add_selinux_hide_access_filter.patch # ReSukiSU selinux_hide access 探测过滤
+│   ├── 50_add_susfs_in_kernel-5.4.patch       # SUSFS 5.4 移植 (含 sucompat ABI 适配)
+│   ├── 55_add_selinux_hide_access_filter.patch # BakaSU main selinux_hide access 探测过滤
 │   ├── 57_add_selinux_hide_context_guards.patch # selinux_hide context/setprocattr 的 adbroot 守卫 (必须紧跟 55_)
 │   ├── 58_add_selinux_hide_setprocattr_guard.patch # 关闭 setprocattr 换行短路 (必须排在 57_ 之后)
+│   ├── bakasu-rc3/                            # 适配 v4.2.0-rc3(fa8311f6) 的 55/57/58 备份
+│   │   ├── 55_add_selinux_hide_access_filter.patch
+│   │   ├── 57_add_selinux_hide_context_guards.patch
+│   │   └── 58_add_selinux_hide_setprocattr_guard.patch
 │   ├── 60_add_rekernel.patch                  # Re:Kernel (binder/signal; drivers/ 挂载见 workflow 4.55)
 │   ├── 65_add_lineage_hide_procfs.patch       # Lineage Hide procfs 路径清洗 (必须排在 50_ 之后)
 │   └── 70_add_cfi_slowpath.patch              # 仅 enable_cfi=false 时应用 (CFI 关闭兜底)
