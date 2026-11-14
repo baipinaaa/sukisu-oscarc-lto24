@@ -606,6 +606,52 @@ constexpr char kPayloadB[] = "\n:r:__selinux_hide_probe_invalid__:s0";
 - 也可不改内核先验证：`ksud feature set selinux_hide 0` 可运行时关掉整个特性
   （代价是 `/sys/fs/selinux/{access,context,status}` 三处伪装同时失效）。
 
+## 13. 自签 manager 授权 (2026-11-14)
+
+**现象**：自编译的 manager APK 装上后，首页两张卡：
+- 「您使用的管理器并非 BakaSU 官方管理器，您可能无法获得权限」
+- 「不支持 / 内核上未检测到 KernelSU 驱动程序，内核错误？」
+
+**根因**（不是内核问题，dmesg 铁证）：
+```
+KernelSU: Found new base.apk at path: /data/app/.../base.apk, is_manager: 0
+KernelSU: Manager search finished
+```
+内核 `throne_tracker` 扫到 APK 但签名不在允许列表 → `is_manager: 0`
+→ `KernelRepository.kt:25` 的 `Natives.isManager` 为 false
+→ `ksuVersion` / `kernelUAPIVersion` 都是 null → 落到 `HomePage.kt:673` 的 `else` 兜底卡。
+
+**根治（两份 workflow 已内置）**：
+
+1. `build-sukisu-lto24.yml`：clone BakaSU 之后用 sed 把自签签名写进
+   `kernel/manager/manager_sign.h` 的 `EXPECTED_SIZE_BAKASU` / `EXPECTED_HASH_BAKASU`。
+   这两个宏就是 `kernel/manager/apk_sign.c:34` 里 `apk_sign_keys[0]` 用的值，
+   换掉后 `throne_tracker` 直接认。签名值由顶层 env 给出：
+   ```
+   MANAGER_SIGN_SIZE: '0x5a5'
+   MANAGER_SIGN_HASH: '71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20'
+   ```
+2. `build-bakasu-manager.yml`：clone 之后 sed 掉 `KsuCli.kt` 里硬编码的官方 hash
+   （`"size: 0x377, hash: d3469712..."` → 自签值），消除「非官方管理器」警告卡。
+
+**实测签名值怎么来**：
+```
+adb shell su -c '/data/adb/ksud debug get-sign /data/app/~~xxx==/com.resukisu.resukisu-xxx==/base.apk'
+# size: 0x5a5, hash: 71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20
+```
+换 keystore 或改 `apksigner` 签名参数（v1/v2/v3 组合）后 size 会变，必须同步两个 workflow 的 env。
+
+**过渡方案（不刷内核，30 秒见效，重启保持）**：
+```
+adb shell su -c '/data/adb/ksud kernel dynamic-manager set-apk <自己的 base.apk 路径>'
+```
+`userspace/ksud/src/android/dynamic_manager.rs:70` 的 `set()` 写
+`/data/adb/ksu/.dynamic_manager`，`init_event.rs:51` 的 `booted_load()` 开机自动重放。
+
+**注意**：改 `manager_sign.h` 后，官方 BakaSU/KernelSU/KOWX712 的 manager 就不被认了
+（`CONFIG_KSU_MULTI_MANAGER_SUPPORT` 若开启，那三个走 `#ifdef` 分支的槽位仍在，
+但我们替换的是无条件的 BAKASU 槽位，等于把它的名额占了）。
+
 ## 备选: 关闭 CFI 的降级方案
 
 若 CFI enforcing 下 KSU 引发 panic (无法开机)：

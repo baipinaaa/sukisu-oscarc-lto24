@@ -119,6 +119,10 @@ on:
 env:
   DEVICE: 'oscarc'
   CLANG_VER: 'clang-r596125'
+  # 自签 manager (manager-signing/bakasu-manager.jks) 的 APK Signing Block 实测值。
+  # ksud debug get-sign <base.apk> 可随时复测。改 keystore 或换签名参数后必须同步。
+  MANAGER_SIGN_SIZE: '0x5a5'
+  MANAGER_SIGN_HASH: '71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20'
 
 jobs:
   build:
@@ -256,6 +260,19 @@ jobs:
           echo "ReSukiSU commit : $(git log --oneline -1)"
           echo "ReSukiSU date   : $(git log -1 --format=%cd --date=short)"
           echo "ReSukiSU commit#: $(git rev-list --count HEAD)"
+          # ★ 根治 manager 授权: 把自签 manager 的签名烧进内核允许列表。
+          #   内核的 apk_sign_keys[0] 用的就是 EXPECTED_SIZE_BAKASU / EXPECTED_HASH_BAKASU
+          #   (kernel/manager/apk_sign.c:34), 替换这两个宏即可让 throne_tracker 扫描时
+          #   is_manager 直接为 1, 不再需要 dynamic-manager 兜底。
+          #   实测值来源: ksud debug get-sign <自签 base.apk>
+          sed -i "s|^#define EXPECTED_SIZE_BAKASU .*|#define EXPECTED_SIZE_BAKASU $MANAGER_SIGN_SIZE|" \
+            kernel/manager/manager_sign.h
+          sed -i "s|^#define EXPECTED_HASH_BAKASU .*|#define EXPECTED_HASH_BAKASU \"$MANAGER_SIGN_HASH\"|" \
+            kernel/manager/manager_sign.h
+          echo "--- manager_sign.h 已注入自签 manager 签名 ---"
+          grep -n "EXPECTED_SIZE_BAKASU\|EXPECTED_HASH_BAKASU" kernel/manager/manager_sign.h
+          grep -qi "EXPECTED_HASH_BAKASU \"$MANAGER_SIGN_HASH\"" kernel/manager/manager_sign.h \
+            || { echo "!! manager_sign.h 注入失败"; exit 1; }
           ls kernel/Kbuild kernel/Kconfig kernel/selinux/selinux.c && echo "结构正确 (kernel/ 目录)"
           cd ..
           ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
