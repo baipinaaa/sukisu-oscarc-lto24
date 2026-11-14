@@ -119,10 +119,14 @@ on:
 env:
   DEVICE: 'oscarc'
   CLANG_VER: 'clang-r596125'
-  # 自签 manager (manager-signing/bakasu-manager.jks) 的 APK Signing Block 实测值。
-  # ksud debug get-sign <base.apk> 可随时复测。改 keystore 或换签名参数后必须同步。
-  MANAGER_SIGN_SIZE: '0x5a5'
-  MANAGER_SIGN_HASH: '71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20'
+  # 自签 manager 的签名证书值 = kernel/manager/apk_sign.c 里 ksu_sha256(cert) 的比对目标:
+  #   EXPECTED_SIZE_BAKASU = 证书 DER 字节数, EXPECTED_HASH_BAKASU = 证书 DER 的 sha256。
+  # 取法(无需 APK): keytool -exportcert -alias bakasu -keystore <jks> -storepass <pw> -file c.der
+  #   stat -c%s c.der  &&  sha256sum c.der
+  # 换 keystore 必须同步本文件的这两个值, 否则内核不认 manager。
+  # 注意: 私钥不在本仓库 (存 GitHub Secrets MANAGER_KEYSTORE_BASE64), 这里只是公开的证书指纹。
+  MANAGER_SIGN_SIZE: '0x55d'
+  MANAGER_SIGN_HASH: '48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d'
 
 jobs:
   build:

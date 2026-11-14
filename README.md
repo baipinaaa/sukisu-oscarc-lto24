@@ -606,7 +606,7 @@ constexpr char kPayloadB[] = "\n:r:__selinux_hide_probe_invalid__:s0";
 - 也可不改内核先验证：`ksud feature set selinux_hide 0` 可运行时关掉整个特性
   （代价是 `/sys/fs/selinux/{access,context,status}` 三处伪装同时失效）。
 
-## 13. 自签 manager 授权 (2026-11-14)
+## 13. 自签 manager 授权 + 密钥管理 (2026-11-14)
 
 **现象**：自编译的 manager APK 装上后，首页两张卡：
 - 「您使用的管理器并非 BakaSU 官方管理器，您可能无法获得权限」
@@ -621,36 +621,84 @@ KernelSU: Manager search finished
 → `KernelRepository.kt:25` 的 `Natives.isManager` 为 false
 → `ksuVersion` / `kernelUAPIVersion` 都是 null → 落到 `HomePage.kt:673` 的 `else` 兜底卡。
 
-**根治（两份 workflow 已内置）**：
+### 13.1 内核比对的是什么
 
-1. `build-sukisu-lto24.yml`：clone BakaSU 之后用 sed 把自签签名写进
-   `kernel/manager/manager_sign.h` 的 `EXPECTED_SIZE_BAKASU` / `EXPECTED_HASH_BAKASU`。
-   这两个宏就是 `kernel/manager/apk_sign.c:34` 里 `apk_sign_keys[0]` 用的值，
-   换掉后 `throne_tracker` 直接认。签名值由顶层 env 给出：
+`kernel/manager/apk_sign.c:34` 的允许列表：
+```c
+static apk_sign_key_t apk_sign_keys[] = {
+    { EXPECTED_SIZE_BAKASU, EXPECTED_HASH_BAKASU },   /* Baka-SU/BakaSU */
+    ...
+};
+```
+`:148 if (ksu_sha256(cert, certificate_size, digest))` → 对 **APK v2 签名块里的第一张证书 DER**
+算 sha256，再 `:166 if (certificate_size == sign_key.size && strcmp(sign_key.sha256, hash_str) == 0)`。
+
+所以两个宏就是「**证书 DER 的字节数** + **证书 DER 的 sha256**」，与 APK 内容、签名参数无关。
+
+### 13.2 根治（两份 workflow 已内置）
+
+1. `build-sukisu-lto24.yml`：clone BakaSU 之后用 sed 把自签证书指纹写进
+   `kernel/manager/manager_sign.h` 的 `EXPECTED_SIZE_BAKASU` / `EXPECTED_HASH_BAKASU`，
+   然后 `grep -qi` 断言注入成功否则构建失败。值在顶层 env：
    ```
-   MANAGER_SIGN_SIZE: '0x5a5'
-   MANAGER_SIGN_HASH: '71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20'
+   MANAGER_SIGN_SIZE: '0x55d'
+   MANAGER_SIGN_HASH: '48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d'
    ```
-2. `build-bakasu-manager.yml`：clone 之后 sed 掉 `KsuCli.kt` 里硬编码的官方 hash
+   这是**公开的证书指纹，不是密钥**，放进仓库没有风险。
+2. `build-bakasu-manager.yml`：clone 之后 sed 掉 `KsuCli.kt:175` 里硬编码的官方 hash
    （`"size: 0x377, hash: d3469712..."` → 自签值），消除「非官方管理器」警告卡。
 
-**实测签名值怎么来**：
+### 13.3 密钥管理（2026-11-14 轮换）
+
+初版把 `.jks` 和明文密码直接放仓库里（commit `8e2d4ac`）。**已视为泄露并弃用**，
+原因：`45e33ba` 之后内核信任这个签名，泄露的签名等于「伪造 manager = 内核级 root 后门」
+（内核只比对 size + hash，不看来历；manager 有权改 allowlist 授权 root、装 system 模块）。
+
+现行做法：
+
+| 项 | 位置 |
+|---|---|
+| keystore 本体 | GitHub Secrets `MANAGER_KEYSTORE_BASE64`（`base64 -w0 bakasu-manager-v2.jks`） |
+| keystore 密码 | GitHub Secrets `MANAGER_KEYSTORE_PASSWORD` |
+| 证书指纹 | 两个 workflow 的 `env`（公开值） |
+| 仓库内 | 只有本说明，**没有 .jks** |
+
+新增/更换密钥的完整步骤：
+```bash
+# 1. 生成 (RSA 4096, PKCS12, 有效期 10000 天)
+keytool -genkeypair -v -keystore bakasu-manager-v2.jks -alias bakasu \
+  -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12 \
+  -storepass '<新密码>' -keypass '<新密码>' \
+  -dname "CN=BakaSU Manager (oscarc), OU=SelfBuild, O=oscarc-lto24, C=CN"
+
+# 2. 取证书指纹 (不需要 APK, 不需要设备)
+keytool -exportcert -alias bakasu -keystore bakasu-manager-v2.jks \
+  -storepass '<新密码>' -file cert.der
+stat -c%s cert.der        # -> MANAGER_SIGN_SIZE, 十进制转十六进制
+sha256sum cert.der        # -> MANAGER_SIGN_HASH
+
+# 3. 填进 GitHub Secrets 与两份 workflow 的 env, 重新构建内核与 manager
+```
+
+**设备侧复核**（拿到 APK 后）：
 ```
 adb shell su -c '/data/adb/ksud debug get-sign /data/app/~~xxx==/com.resukisu.resukisu-xxx==/base.apk'
-# size: 0x5a5, hash: 71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20
+# size: 0x55d, hash: 48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d
 ```
-换 keystore 或改 `apksigner` 签名参数（v1/v2/v3 组合）后 size 会变，必须同步两个 workflow 的 env。
 
-**过渡方案（不刷内核，30 秒见效，重启保持）**：
+### 13.4 过渡方案（不刷内核，30 秒见效，重启保持）
 ```
 adb shell su -c '/data/adb/ksud kernel dynamic-manager set-apk <自己的 base.apk 路径>'
 ```
 `userspace/ksud/src/android/dynamic_manager.rs:70` 的 `set()` 写
 `/data/adb/ksu/.dynamic_manager`，`init_event.rs:51` 的 `booted_load()` 开机自动重放。
 
-**注意**：改 `manager_sign.h` 后，官方 BakaSU/KernelSU/KOWX712 的 manager 就不被认了
-（`CONFIG_KSU_MULTI_MANAGER_SUPPORT` 若开启，那三个走 `#ifdef` 分支的槽位仍在，
-但我们替换的是无条件的 BAKASU 槽位，等于把它的名额占了）。
+### 13.5 注意
+
+- 改 `manager_sign.h` 后，官方 BakaSU/KernelSU/KOWX712 的 manager 就不再被认了
+  （`CONFIG_KSU_MULTI_MANAGER_SUPPORT` 开启时其余槽位仍在，但被替换的是无条件的 BAKASU 槽位）。
+- **轮换密钥 = 必须重刷内核**：`EXPECTED_HASH_BAKASU` 是编译期常量。同时旧 manager 要卸载重装
+  （签名变了无法覆盖安装）；`/data/adb/ksu/` 下的配置、模块不受影响。
 
 ## 备选: 关闭 CFI 的降级方案
 

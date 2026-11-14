@@ -1,60 +1,59 @@
-# manager-signing — BakaSU Manager APK 的自用签名密钥
+# manager-signing — BakaSU Manager APK 的签名密钥（**密钥不在本目录**）
 
-`bakasu-manager.jks` 是 **本仓库专用** 的 APK 签名密钥，由
-`.github/workflows/build-bakasu-manager.yml` 在构建 BakaSU Manager 时使用。
+本目录**只保留说明**。keystore 本体与密码都存在 GitHub Secrets：
 
-## 参数
+| Secret 名 | 内容 |
+|---|---|
+| `MANAGER_KEYSTORE_BASE64` | `base64 -w0 bakasu-manager-v2.jks` 的输出 |
+| `MANAGER_KEYSTORE_PASSWORD` | 该 keystore 的 storepass（= keypass） |
+
+`.github/workflows/build-bakasu-manager.yml` 在「安装签名配置」步骤里
+`printf '%s' "$KEYSTORE_BASE64" | base64 -d > bakasu-manager.jks` 还原，未配置则直接失败。
+
+## 当前密钥参数
 
 | 项 | 值 |
 |---|---|
-| 文件 | `bakasu-manager.jks`（PKCS12） |
 | 别名 alias | `bakasu` |
-| 有效期 | 10000 天（约 27 年） |
 | 密钥 | RSA 4096 / SHA384withRSA |
-| 证书 | `CN=BakaSU Manager (sukisu-oscarc-lto24), OU=SelfBuild, O=baipinaaa, L=NA, ST=NA, C=CN` |
-| 证书 SHA-256 | `71:F8:A8:1D:8B:3F:48:05:4D:0E:6F:B8:F2:5C:9F:43:39:7B:B0:48:B3:A0:9B:C0:5B:F8:29:D8:08:BC:CC:20` |
-| 密码 | 见下方「为什么密码是明文」 |
+| storetype | PKCS12 |
+| 有效期 | 10000 天 |
+| 证书主体 | `CN=BakaSU Manager (oscarc), OU=SelfBuild, O=oscarc-lto24, C=CN` |
+| 证书 DER 字节数 | 1373 = `0x55d` |
+| 证书 DER SHA-256 | `48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d` |
 
-## 为什么签名要自己搞一份
+这两个值（size / hash）就是内核 `kernel/manager/manager_sign.h` 里
+`EXPECTED_SIZE_BAKASU` / `EXPECTED_HASH_BAKASU` 的取值，两份 workflow 顶层 env 里各写一份。
 
-BakaSU 官方 main 分支没有发布 APK（最新 release 仍是 `v4.2.0-rc3`，UAPI v4，
-而内核侧已经升到 main / UAPI v6）。官方 CI 只在 PR 上跑 `Build Manager`，而且
-PR 构建用的是 **一次性随机 keystore** —— 每次签名都不同，装一次就要卸载一次。
+## ⚠ 已弃用的第一代密钥
 
+`8e2d4ac` ~ `45e33ba` 期间，仓库里直接放着 `bakasu-manager.jks`（证书 SHA-256
+`71:f8:a8:1d:...:cc:20`）且密码明文写在 workflow 的 `env` 里。**该密钥已作废**：
+
+- 它出现在公开仓库的 git 历史里，删除文件不能让任何人都取不到
+- `45e33ba` 之后内核信任「该签名的 APK = manager」，而 manager 可改 allowlist 授权 root、
+  装 system 模块 —— **谁拿到这把钥匙，谁就能造出一个被本内核认定为 manager 的 APK**
+- 当前内核已改为只信任 13.3 轮换后的新证书（`0x55d` / `48480a1f...`）
+
+若在旧设备/旧 boot.img 上见到 `71f8a81d...` 生效，说明还停留在旧内核，应立刻重刷。
+
+## 为什么不用官方 key
+
+BakaSU 官方 main 分支不发布 APK（最新 release 仍是 `v4.2.0-rc3`，UAPI v4，而内核侧已升到
+main / UAPI v6），官方 CI 的 PR 构建用的是**一次性随机 keystore**，每次签名都不同。
 自己固定一份密钥后：
 
-- 同一个包名 `com.resukisu.resukisu`，**可以直接覆盖安装**，不用卸载
-- 与官方 `v4.2.0-rc3` 的签名不同，所以 **第一次从官方版切过来仍需卸载一次**
-- 之后每次 CI 重新构建都能无缝升级
+- 同一包名 `com.resukisu.resukisu`，**同一密钥签出的新版本可直接覆盖安装**，不用卸载
+- 与官方 `v4.2.0-rc3` 签名不同，所以**第一次从官方版切过来仍需卸载一次**
 
-## 为什么密码是明文
-
-密码写在 `.github/workflows/build-bakasu-manager.yml` 的 `env:` 里，同时也在
-这里是公开可见的。这是**有意为之**：
-
-- 本仓库是个人自用的公开仓库，密钥泄漏的最坏后果只是「别人也能签出同签名的
-  BakaSU Manager」，没有其它资产受影响
-- 用 GitHub Secrets 更安全，但那样构建就无法完全复现，且这个 workflow 的
-  定位就是「一条命令出 APK」
-- 如果你要把这套东西给别人用，请**自己重新生成密钥**并改用 Secrets
-
-重新生成的方法：
+## 校验装上的 APK 是不是这份密钥签的
 
 ```bash
-keytool -genkeypair -v \
-  -keystore bakasu-manager.jks -alias bakasu \
-  -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12 \
-  -storepass '<新密码>' -keypass '<新密码>' \
-  -dname "CN=BakaSU Manager, OU=SelfBuild, O=you, C=CN"
+apksigner verify --print-certs BakaSU_v4.x.y_35xxx-arm64-v8a-release.apk | grep SHA-256
+# 期望 48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d
 ```
 
-生成后替换本目录文件、改 workflow 里的 `KEYSTORE_PASSWORD` 即可。
-
-## 指纹核对
-
-装完 APK 后可以这样确认它确实是用这份密钥签的：
-
+或设备侧（连 APK 文件都不用拷出来）：
 ```bash
-apksigner verify --print-certs BakaSU_v4.3.0_35xxx-arm64-v8a-release.apk | grep SHA-256
-# 应输出 71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20
+adb shell su -c '/data/adb/ksud debug get-sign $(pm path com.resukisu.resukisu | sed "s/package://")'
 ```

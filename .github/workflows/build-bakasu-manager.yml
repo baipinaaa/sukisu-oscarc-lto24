@@ -59,11 +59,17 @@ permissions:
 env:
   KEYSTORE_FILE_NAME: 'bakasu-manager.jks'
   KEYSTORE_ALIAS: 'bakasu'
-  KEYSTORE_PASSWORD: 'bakasu-oscarc-lto24'
+  # 密钥本体与密码都不在仓库里, 只存在 GitHub Secrets。
+  #   MANAGER_KEYSTORE_BASE64     : base64 -w0 bakasu-manager-v2.jks
+  #   MANAGER_KEYSTORE_PASSWORD   : 该 keystore 的 storepass (= keypass)
+  # 仓库里 manager-signing/ 只剩 README 说明, 没有 .jks。
+  KEYSTORE_BASE64: ${{ secrets.MANAGER_KEYSTORE_BASE64 }}
+  KEYSTORE_PASSWORD: ${{ secrets.MANAGER_KEYSTORE_PASSWORD }}
   BAKASU_REPO: 'https://github.com/Baka-SU/BakaSU.git'
-  # 自签 manager 的 APK Signing Block 实测值 (与内核 workflow 的 env 保持一致)
-  MANAGER_SIGN_SIZE: '0x5a5'
-  MANAGER_SIGN_HASH: '71f8a81d8b3f48054d0e6fb8f25c9f43397bb048b3a09bc05bf829d808bccc20'
+  # 自签 manager 的证书指纹 (= 内核 EXPECTED_HASH_BAKASU), 与内核 workflow 的 env 保持一致
+  # 同时用于改写 KsuCli.kt 的 isOfficialSignature() 硬编码值
+  MANAGER_SIGN_SIZE: '0x55d'
+  MANAGER_SIGN_HASH: '48480a1fc5145334059cfc0f6c767dd5b6fdf05d4ffe2a5af03e80478c909a7d'
 
 jobs:
   build:
@@ -146,7 +152,18 @@ jobs:
       - name: 安装签名配置
         run: |
           set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "::error::未配置 secrets.MANAGER_KEYSTORE_BASE64 (base64 -w0 <jks> 的内容)"
+            exit 1
+          fi
+          if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
+            echo "::error::未配置 secrets.MANAGER_KEYSTORE_PASSWORD"
+            exit 1
+          fi
+          mkdir -p self/manager-signing bakasu/manager
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "self/manager-signing/$KEYSTORE_FILE_NAME"
           cp "self/manager-signing/$KEYSTORE_FILE_NAME" "bakasu/manager/$KEYSTORE_FILE_NAME"
+          echo "keystore: $(stat -c%s "bakasu/manager/$KEYSTORE_FILE_NAME") bytes"
           cat >> bakasu/manager/gradle.properties <<EOF
 
           # ---- 由 build-bakasu-manager.yml 注入 (lsplugin.apksign 读取) ----
