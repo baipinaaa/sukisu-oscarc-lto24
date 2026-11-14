@@ -157,6 +157,55 @@ jobs:
           echo "--- 产物 ---"
           find app/build/outputs/apk -name '*.apk' -printf '%p  %s bytes\n'
 
+      # ------------------------------------------------- BakaSU ksud (Rust)
+      # 官方 build-manager.yml 是三阶段: build-manager -> build-ksud -> repack-manager。
+      # 只 assembleRelease 得到的 APK 不含 ksud, 装上后会抛
+      #   IllegalArgumentException: libksud.so was not found in the application native library path
+      - name: Setup Rust (nightly + aarch64-linux-android)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          targets: aarch64-linux-android
+          components: rust-src
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build ksud (arm64-v8a)
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          test -d "$ANDROID_NDK_HOME"
+          clang --target=aarch64-linux-gnu -c -nostdlib \
+            -o bakasu/userspace/ksud/.lkm_image_bootstrap.o \
+            bakasu/userspace/ksud/src/lkm_image_bootstrap.S
+          cd bakasu/userspace/ksud
+          cargo ndk b -P 26 -t aarch64-linux-android -r \
+            -Z build-std-features="optimize_for_size" -Z trim-paths
+          echo "--- ksud ---"
+          ls -l target/aarch64-linux-android/release/ksud
+          file target/aarch64-linux-android/release/ksud || true
+
+      - name: Repack APK (注入 lib/arm64-v8a/libksud.so 并重签)
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          mkdir -p bakasu/target/aarch64-linux-android/release
+          cp -f bakasu/userspace/ksud/target/aarch64-linux-android/release/ksud \
+                bakasu/target/aarch64-linux-android/release/ksud
+          cd bakasu
+          python3 repack_apk_multi.py repack \
+            -b release -t release -a arm64-v8a \
+            -K "manager/$KEYSTORE_FILE_NAME" -A "$KEYSTORE_ALIAS" \
+            -P "$KEYSTORE_PASSWORD" -S "$KEYSTORE_PASSWORD" \
+            --strip
+          echo "--- repack 产物 ---"
+          ls -l dist/
+          APK="$(ls dist/*.apk | head -1)"
+          echo "检查 $APK 是否含 libksud.so"
+          unzip -l "$APK" | grep -E 'libksud\.so' || { echo "FAIL: libksud.so missing"; exit 1; }
+
       - name: Build debug APK
         if: ${{ inputs.build_debug }}
         working-directory: bakasu/manager
@@ -169,8 +218,8 @@ jobs:
       - name: 校验签名
         run: |
           set -euo pipefail
-          APK=$(find bakasu/manager/app/build/outputs/apk/release -name '*arm64-v8a*.apk' | head -1)
-          [ -n "$APK" ] || APK=$(find bakasu/manager/app/build/outputs/apk/release -name '*.apk' | head -1)
+          APK=$(find bakasu/dist -name '*arm64-v8a*.apk' | head -1)
+          [ -n "$APK" ] || APK=$(find bakasu/dist -name '*.apk' | head -1)
           echo "检查 $APK"
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
           "${BUILD_TOOLS}apksigner" verify --print-certs "$APK" | head -8 || true
@@ -179,7 +228,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: BakaSU-Manager-release-${{ inputs.version_name }}
-          path: bakasu/manager/app/build/outputs/apk/release/*.apk
+          path: bakasu/dist/*.apk
           if-no-files-found: error
           retention-days: 90
 
