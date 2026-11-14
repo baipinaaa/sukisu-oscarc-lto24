@@ -421,6 +421,36 @@ CI 首跑若 `module_layout` 不匹配，按 8.2 的反查算法对 20261110 的
   的旧版存于 `patches/bakasu-rc3/`，回退时三个文件必须成对替换。
 - ⚠ `resukisu_ref` **不要填 `latest`**（内容会漂移，补丁棘点可能再次失配）。
 
+#### 8.5 Manager APK 自行构建（`build-bakasu-manager.yml`）
+
+BakaSU 官方 main 分支**没有发布 APK**：最新 release 仍停在 `v4.2.0-rc3`
+（UAPI v4，2026-09-22），而内核侧已升到 main（UAPI v6）。官方 `Build Manager`
+工作流带 `workflow_dispatch`，但在上游仓库里跑出来的产物用的是**一次性随机
+keystore**（`build-manager.yml:32-47`），每次签名不同，装一次卸一次。
+
+因此本仓库自带 `.github/workflows/build-bakasu-manager.yml`：
+
+| 项 | 说明 |
+|---|---|
+| 源码 | `bakasu_ref` 输入，默认 `548d1dda`；用 `git clone --filter=blob:none` 保留完整提交历史 |
+| 版本名 | `version_name` 输入，默认 `v4.3.0`，作为 git tag 打在 HEAD → `getGitDescribe()` |
+| versionCode | `30000 + git rev-list --count HEAD + 700`（rc3 = 35171，新构建更高，可覆盖安装） |
+| 签名 | `manager-signing/bakasu-manager.jks`（PKCS12 / 别名 `bakasu` / RSA 4096），密码明文写在 workflow env 里 |
+| 包名 | 默认 `com.resukisu.resukisu`；`package_suffix` 填 `.dev` 可与旧版共存 |
+| 产物 | `BakaSU_v4.3.0_35xxx-{arm64-v8a,armeabi-v7a,x86_64,riscv64,universal}-release.apk` |
+
+⚠ 与官方 `v4.2.0-rc3` 签名不同，**第一次从官方版切过来要卸载一次**；之后同签
+名可无缝覆盖升级。签名指纹：`71:F8:A8:1D:...:CC:20`（完整值见
+`manager-signing/README.md`）。
+
+⚠ **UAPI 4 → 6 其实不强制换 manager**：`uapi/supercall.h` 的差异全是纯新增
+（`EVENT_SERVICES=4`、`KSU_GET_INFO_FLAG_PREINIT=1<<5`、
+`KSU_IOCTL_LOOKUP_SYMBOLS=_IOW('K',22)`、`KSU_FEATURE_FLAG_*`），唯一语义变化是
+`ksu_get_feature_cmd.supported` 由 bool 改 bit flags（布局不变，bit0 兼容）；
+manager 侧也没有 UAPI 版本门禁（`Natives.managerUAPIVersion` 只作为
+`KSU_UAPI_VER` 环境变量喂给脚本）。所以旧 rc3 manager + main 内核可以正常运行，
+只是看不到 `shell_su_adb_only` 这个新开关。
+
 诊断产物（head_*.symtypes / off_*.symtypes / diff_*.txt）随 artifact 上传，
 供本地精确分析。
 
@@ -600,6 +630,9 @@ sukisu-oscarc-lto24/
 │   ├── 60_add_rekernel.patch                  # Re:Kernel (binder/signal; drivers/ 挂载见 workflow 4.55)
 │   ├── 65_add_lineage_hide_procfs.patch       # Lineage Hide procfs 路径清洗 (必须排在 50_ 之后)
 │   └── 70_add_cfi_slowpath.patch              # 仅 enable_cfi=false 时应用 (CFI 关闭兜底)
+├── manager-signing/                          # BakaSU Manager 自用签名密钥
+│   ├── bakasu-manager.jks                     # PKCS12, 别名 bakasu, RSA 4096
+│   └── README.md                              # 参数/指纹/为何密码明文
 ├── _tools/check_hunk_headers.py               # patch hunk 头校验小工具
 └── README.md
 ```
