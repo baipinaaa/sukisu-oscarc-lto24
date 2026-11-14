@@ -635,6 +635,47 @@ static apk_sign_key_t apk_sign_keys[] = {
 
 所以两个宏就是「**证书 DER 的字节数** + **证书 DER 的 sha256**」，与 APK 内容、签名参数无关。
 
+#### 13.1.1 陷阱：RSA 4096 证书会被静默拒绝（2026-11-14 实测）
+
+`apk_sign.c:137` 有一行上游硬编码的上限：
+
+```c
+#define CERT_MAX_LENGTH 1024
+    if (certificate_size > CERT_MAX_LENGTH) {
+        pr_info("cert length overlimit
+");
+        return false;
+    }
+```
+
+它在**算 sha256 之前**就返回，所以指纹改得再对也没用。RSA 4096 的证书 DER 是
+**1373 字节 (0x55d)** > 1024 → 必然被拒。刷了带正确指纹的内核后 dmesg 仍然是：
+
+```
+[155.806299] KernelSU: cert length overlimit
+[155.806302] KernelSU: Found new base.apk at path: .../com.resukisu.resukisu-.../base.apk, is_manager: 0
+```
+
+与正常 app 的区别：正常 app 那条前面会有 `KernelSU: sha256: <64hex>`，
+被 overlimit 拒掉的**没有** sha256 行 —— 这是最快的判别法。
+
+因此 `build-sukisu-lto24.yml` 在注入指纹之后还会把上限放宽：
+
+```bash
+sed -i "s|^#define CERT_MAX_LENGTH .*|#define CERT_MAX_LENGTH 2048|"   kernel/manager/apk_sign.c
+```
+
+`char cert[2048]` 放在 kworker 的 16 KB 内核栈上仍然安全；主流证书
+（RSA 2048/3072、ECDSA P-256/P-384）本来就 ≤ 1024，不受影响。
+
+**换密钥时必须同时检查证书 DER 大小**：
+
+```bash
+keytool -exportcert -keystore bakasu-manager-v2.jks -alias bakasu | wc -c   # 必须 <= 2048
+```
+
+想完全避开这个改动，就生成 RSA 2048 的密钥（DER ≈ 850~900 字节）。
+
 ### 13.2 根治（两份 workflow 已内置）
 
 1. `build-sukisu-lto24.yml`：clone BakaSU 之后用 sed 把自签证书指纹写进

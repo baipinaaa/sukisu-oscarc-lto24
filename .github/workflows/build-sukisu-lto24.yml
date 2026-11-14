@@ -277,6 +277,23 @@ jobs:
           grep -n "EXPECTED_SIZE_BAKASU\|EXPECTED_HASH_BAKASU" kernel/manager/manager_sign.h
           grep -qi "EXPECTED_HASH_BAKASU \"$MANAGER_SIGN_HASH\"" kernel/manager/manager_sign.h \
             || { echo "!! manager_sign.h 注入失败"; exit 1; }
+
+          # ★ RSA 4096 证书超过上游硬编码上限, 必须一并放宽。
+          #   kernel/manager/apk_sign.c:137  #define CERT_MAX_LENGTH 1024
+          #   check_block() 在算 sha256 之前就:
+          #     if (certificate_size > CERT_MAX_LENGTH) {
+          #         pr_info("cert length overlimit"); return false; }
+          #   我们 RSA 4096 的证书 DER = 1373 字节 (0x55d) > 1024 =>
+          #   throne_tracker 永远 is_manager: 0。实测 dmesg 铁证 (2026-11-14):
+          #     [155.806299] KernelSU: cert length overlimit
+          #     [155.806302] KernelSU: Found new base.apk at ... is_manager: 0
+          #   放宽到 2048: char cert[2048] 在 kworker 16K 栈上仍安全,
+          #   且主流证书 (RSA 2048/3072, ECDSA P-256/P-384) 本就 <= 1024 不受影响。
+          sed -i "s|^#define CERT_MAX_LENGTH .*|#define CERT_MAX_LENGTH 2048|" \
+            kernel/manager/apk_sign.c
+          grep -q "^#define CERT_MAX_LENGTH 2048$" kernel/manager/apk_sign.c \
+            || { echo "!! CERT_MAX_LENGTH 放宽失败"; exit 1; }
+          grep -n "CERT_MAX_LENGTH" kernel/manager/apk_sign.c
           ls kernel/Kbuild kernel/Kconfig kernel/selinux/selinux.c && echo "结构正确 (kernel/ 目录)"
           cd ..
           ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu
